@@ -8,7 +8,7 @@ import toast from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import type { TestResult, UniqueCode, Video, Question } from '../types';
 
-const ADMIN_PASSWORD = 'admin123';
+const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD || 'default';
 
 type Tab = 'results' | 'codes' | 'videos' | 'questions';
 
