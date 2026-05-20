@@ -2,15 +2,98 @@ import { useEffect, useState } from 'react';
 import {
   Lock, BarChart3, Users, TrendingUp, Award,
   Copy, Download, Plus, Trash2, Edit, Check, X,
-  Search, Eye, EyeOff, ChevronDown, BookOpen, FileQuestion
+  Search, Eye, EyeOff, ChevronDown, BookOpen, FileQuestion,
+  Video, Calendar, Clock, Link as LinkIcon, FileText,
+  Upload, Youtube, Monitor, Grid3x3, List, Sparkles,
+  GraduationCap, Library, FolderOpen, ExternalLink, FolderPlus,
+  Timer, Layers, Settings, PlayCircle, StopCircle
 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { supabase } from '../lib/supabase';
-import type { TestResult, UniqueCode, Video, Question } from '../types';
+import { ref, get, set, push, update, remove } from 'firebase/database';
+import { db } from '../lib/firebase';
 
-const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD || 'default';
+const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD;
 
-type Tab = 'results' | 'codes' | 'videos' | 'questions';
+type Tab = 'results' | 'codes' | 'videos' | 'questions' | 'materials' | 'live' | 'test-categories';
+
+interface TestResult {
+  id: string;
+  student_name: string;
+  code: string;
+  score: number;
+  total_questions: number;
+  percentage: number;
+  completed_on: string;
+  category_id?: string;
+  category_name?: string;
+}
+
+interface UniqueCode {
+  id: string;
+  code: string;
+  student_name: string;
+  used: boolean;
+  test_score?: number;
+  created_at: string;
+}
+
+interface VideoType {
+  id: string;
+  topic: string;
+  youtube_url: string;
+  description: string;
+  duration: string;
+  thumbnail?: string;
+  added_on: string;
+}
+
+interface Question {
+  id: string;
+  text: string;
+  option_a: string;
+  option_b: string;
+  option_c: string;
+  option_d: string;
+  correct_answer: 'A' | 'B' | 'C' | 'D';
+  sort_order: number;
+  category_id?: string;
+}
+
+interface TestCategory {
+  id: string;
+  name: string;
+  description: string;
+  time_limit: number; // in minutes
+  total_questions: number;
+  is_active: boolean;
+  created_at: string;
+  icon?: string;
+  passing_score: number;
+}
+
+interface StudyMaterial {
+  id: string;
+  title: string;
+  description: string;
+  file_url: string;
+  file_type: 'pdf' | 'doc' | 'ppt' | 'video' | 'audio';
+  subject: string;
+  size: string;
+  created_at: string;
+  downloads: number;
+}
+
+interface LiveClass {
+  id: string;
+  title: string;
+  youtube_stream_url: string;
+  scheduled_at: string;
+  duration: string;
+  description: string;
+  is_live: boolean;
+  created_at: string;
+  viewers: number;
+}
 
 interface AdminDashboardProps {
   onLoginSuccess: () => void;
@@ -21,12 +104,17 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
   const [password, setPassword] = useState('');
   const [showPw, setShowPw] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>('results');
+  const [loading, setLoading] = useState(false);
 
   // Data
   const [results, setResults] = useState<TestResult[]>([]);
   const [codes, setCodes] = useState<UniqueCode[]>([]);
-  const [videos, setVideos] = useState<Video[]>([]);
+  const [videos, setVideos] = useState<VideoType[]>([]);
   const [questions, setQuestions] = useState<Question[]>([]);
+  const [materials, setMaterials] = useState<StudyMaterial[]>([]);
+  const [liveClasses, setLiveClasses] = useState<LiveClass[]>([]);
+  const [testCategories, setTestCategories] = useState<TestCategory[]>([]);
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
 
   // Search
   const [search, setSearch] = useState('');
@@ -36,39 +124,159 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
   const [generatedCode, setGeneratedCode] = useState('');
 
   // New Video form
-  const [newVideo, setNewVideo] = useState({ topic: '', youtube_url: '', description: '', duration: '15 min' });
+  const [newVideo, setNewVideo] = useState({ topic: '', youtube_url: '', description: '', duration: '15 min', thumbnail: '' });
   const [editVideoId, setEditVideoId] = useState<string | null>(null);
 
   // New Question form
-  const [newQ, setNewQ] = useState<{ text: string; option_a: string; option_b: string; option_c: string; option_d: string; correct_answer: 'A' | 'B' | 'C' | 'D'; sort_order: number }>({ text: '', option_a: '', option_b: '', option_c: '', option_d: '', correct_answer: 'A', sort_order: 0 });
+  const [newQ, setNewQ] = useState({
+    text: '', option_a: '', option_b: '', option_c: '', option_d: '', correct_answer: 'A' as 'A' | 'B' | 'C' | 'D', sort_order: 0, category_id: ''
+  });
   const [editQId, setEditQId] = useState<string | null>(null);
 
-  const [copiedCode, setCopiedCode] = useState<string | null>(null);
+  // Test Category form
+  const [newCategory, setNewCategory] = useState({
+    name: '',
+    description: '',
+    time_limit: 30,
+    passing_score: 60,
+    is_active: true,
+    icon: '📚'
+  });
+  const [editCategoryId, setEditCategoryId] = useState<string | null>(null);
 
+  // Study Material form
+  const [newMaterial, setNewMaterial] = useState({ title: '', description: '', file_url: '', file_type: 'pdf', subject: '', size: '2.5 MB' });
+  const [editMaterialId, setEditMaterialId] = useState<string | null>(null);
+
+  // Live Class form
+  const [newLiveClass, setNewLiveClass] = useState({ title: '', youtube_stream_url: '', scheduled_at: '', duration: '60', description: '', is_live: false });
+  const [editLiveId, setEditLiveId] = useState<string | null>(null);
+
+  const [copiedCode, setCopiedCode] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+
+  // Fetch all data from Firebase Realtime Database
   useEffect(() => {
     if (isLoggedIn) {
-      fetchAll();
+      fetchAllData();
+    } else {
+      setLoading(false);
     }
   }, [isLoggedIn]);
 
-  async function fetchAll() {
-    const [r, c, v, q] = await Promise.all([
-      supabase.from('test_results').select('*').order('completed_on', { ascending: false }),
-      supabase.from('unique_codes').select('*').order('student_name'),
-      supabase.from('videos').select('*').order('added_on'),
-      supabase.from('questions').select('*').order('sort_order'),
-    ]);
-    setResults(r.data ?? []);
-    setCodes(c.data ?? []);
-    setVideos(v.data ?? []);
-    setQuestions(q.data ?? []);
+  async function fetchAllData() {
+    setLoading(true);
+    try {
+      // Fetch test results
+      const resultsRef = ref(db, 'test_results');
+      const resultsSnapshot = await get(resultsRef);
+      if (resultsSnapshot.exists()) {
+        const resultsData = resultsSnapshot.val();
+        const resultsList = Object.entries(resultsData).map(([id, data]: [string, any]) => ({
+          id,
+          ...data
+        })).sort((a, b) => new Date(b.completed_on).getTime() - new Date(a.completed_on).getTime());
+        setResults(resultsList);
+      } else {
+        setResults([]);
+      }
+
+      // Fetch unique codes
+      const codesRef = ref(db, 'unique_codes');
+      const codesSnapshot = await get(codesRef);
+      if (codesSnapshot.exists()) {
+        const codesData = codesSnapshot.val();
+        const codesList = Object.entries(codesData).map(([id, data]: [string, any]) => ({
+          id,
+          ...data
+        })).sort((a, b) => a.student_name.localeCompare(b.student_name));
+        setCodes(codesList);
+      } else {
+        setCodes([]);
+      }
+
+      // Fetch videos
+      const videosRef = ref(db, 'videos');
+      const videosSnapshot = await get(videosRef);
+      if (videosSnapshot.exists()) {
+        const videosData = videosSnapshot.val();
+        const videosList = Object.entries(videosData).map(([id, data]: [string, any]) => ({
+          id,
+          ...data
+        })).sort((a, b) => new Date(b.added_on).getTime() - new Date(a.added_on).getTime());
+        setVideos(videosList);
+      } else {
+        setVideos([]);
+      }
+
+      // Fetch questions
+      const questionsRef = ref(db, 'questions');
+      const questionsSnapshot = await get(questionsRef);
+      if (questionsSnapshot.exists()) {
+        const questionsData = questionsSnapshot.val();
+        const questionsList = Object.entries(questionsData).map(([id, data]: [string, any]) => ({
+          id,
+          ...data
+        })).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+        setQuestions(questionsList);
+      } else {
+        setQuestions([]);
+      }
+
+      // Fetch test categories
+      const categoriesRef = ref(db, 'test_categories');
+      const categoriesSnapshot = await get(categoriesRef);
+      if (categoriesSnapshot.exists()) {
+        const categoriesData = categoriesSnapshot.val();
+        const categoriesList = Object.entries(categoriesData).map(([id, data]: [string, any]) => ({
+          id,
+          ...data
+        })).sort((a, b) => a.name.localeCompare(b.name));
+        setTestCategories(categoriesList);
+      } else {
+        setTestCategories([]);
+      }
+
+      // Fetch study materials
+      const materialsRef = ref(db, 'study_materials');
+      const materialsSnapshot = await get(materialsRef);
+      if (materialsSnapshot.exists()) {
+        const materialsData = materialsSnapshot.val();
+        const materialsList = Object.entries(materialsData).map(([id, data]: [string, any]) => ({
+          id,
+          ...data
+        })).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+        setMaterials(materialsList);
+      } else {
+        setMaterials([]);
+      }
+
+      // Fetch live classes
+      const liveRef = ref(db, 'live_classes');
+      const liveSnapshot = await get(liveRef);
+      if (liveSnapshot.exists()) {
+        const liveData = liveSnapshot.val();
+        const liveList = Object.entries(liveData).map(([id, data]: [string, any]) => ({
+          id,
+          ...data
+        })).sort((a, b) => new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime());
+        setLiveClasses(liveList);
+      } else {
+        setLiveClasses([]);
+      }
+    } catch (error) {
+      console.error('Error fetching data:', error);
+      toast.error('Failed to load data');
+    } finally {
+      setLoading(false);
+    }
   }
 
   function handleLogin(e: React.FormEvent) {
     e.preventDefault();
     if (password === ADMIN_PASSWORD) {
       onLoginSuccess();
-      toast.success('Welcome, Admin!');
+      toast.success('Welcome, Guruji! 🙏');
     } else {
       toast.error('Incorrect password.');
     }
@@ -79,12 +287,15 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
   const avgScore = results.length ? Math.round(results.reduce((a, r) => a + r.percentage, 0) / results.length) : 0;
   const passRate = results.length ? Math.round(results.filter((r) => r.percentage >= 60).length / results.length * 100) : 0;
   const highest = results.length ? Math.max(...results.map((r) => r.percentage)) : 0;
+  const totalMaterials = materials.length;
+  const activeLiveClasses = liveClasses.filter(l => l.is_live || new Date(l.scheduled_at) > new Date()).length;
+  const totalCategories = testCategories.length;
 
   // CSV export
   function exportCSV() {
-    const header = 'Student Name,Code,Score,Percentage,Date\n';
+    const header = 'Student Name,Code,Score,Percentage,Date,Test Category\n';
     const rows = results.map((r) =>
-      `"${r.student_name}","${r.code}",${r.score}/${r.total_questions},${r.percentage}%,"${new Date(r.completed_on).toLocaleString()}"`
+      `"${r.student_name}","${r.code}",${r.score}/${r.total_questions},${r.percentage}%,"${new Date(r.completed_on).toLocaleString()}","${r.category_name || 'General'}"`
     ).join('\n');
     const blob = new Blob([header + rows], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
@@ -94,27 +305,54 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
     toast.success('CSV downloaded!');
   }
 
-  // Generate code
+  // Generate unique code
   function generateCode() {
-    if (!newStudentName.trim()) { toast.error('Enter student name first.'); return; }
+    if (!newStudentName.trim()) {
+      toast.error('Enter student name first.');
+      return;
+    }
     const suffix = Math.random().toString(36).substring(2, 6).toUpperCase();
     setGeneratedCode(`SANKALPA_${suffix}`);
   }
 
   async function saveCode() {
     if (!generatedCode || !newStudentName.trim()) return;
-    const { error } = await supabase.from('unique_codes').insert({ code: generatedCode, student_name: newStudentName.trim(), used: false });
-    if (error) { toast.error('Code already exists, regenerate.'); return; }
-    toast.success(`Code saved for ${newStudentName}`);
-    setNewStudentName('');
-    setGeneratedCode('');
-    fetchAll();
+
+    try {
+      const codesRef = ref(db, 'unique_codes');
+      const snapshot = await get(codesRef);
+      let codeExists = false;
+      if (snapshot.exists()) {
+        const codesData = snapshot.val();
+        codeExists = Object.values(codesData).some((c: any) => c.code === generatedCode);
+      }
+
+      if (codeExists) {
+        toast.error('Code already exists, regenerate.');
+        return;
+      }
+
+      const newCodeRef = push(ref(db, 'unique_codes'));
+      await set(newCodeRef, {
+        code: generatedCode,
+        student_name: newStudentName.trim(),
+        used: false,
+        created_at: new Date().toISOString()
+      });
+
+      toast.success(`✨ Code saved for ${newStudentName}`);
+      setNewStudentName('');
+      setGeneratedCode('');
+      fetchAllData();
+    } catch (error) {
+      toast.error('Failed to save code');
+    }
   }
 
   function copyCode(code: string) {
     navigator.clipboard.writeText(code);
     setCopiedCode(code);
-    toast.success('Code copied!');
+    toast.success('Code copied to clipboard!');
     setTimeout(() => setCopiedCode(null), 2000);
   }
 
@@ -126,109 +364,345 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
     }
 
     try {
-      console.log('saveVideo called', { editVideoId, newVideo });
-
       if (editVideoId) {
-        const { error } = await supabase.from('videos').update(newVideo).eq('id', editVideoId);
-        console.log('saveVideo update result', { error });
-        if (error) {
-          toast.error(error.message || 'Failed to update video.');
-          return;
-        }
+        const videoRef = ref(db, `videos/${editVideoId}`);
+        await update(videoRef, newVideo);
         toast.success('Video updated!');
         setEditVideoId(null);
       } else {
-        const videoToInsert = { ...newVideo, added_on: new Date().toISOString() };
-        const { error } = await supabase.from('videos').insert(videoToInsert);
-        console.log('saveVideo insert result', { error });
-        if (error) {
-          toast.error(error.message || 'Failed to add video.');
-          return;
-        }
-        toast.success('Video added!');
+        const newVideoRef = push(ref(db, 'videos'));
+        await set(newVideoRef, {
+          ...newVideo,
+          added_on: new Date().toISOString()
+        });
+        toast.success('Video added to library!');
       }
 
-      setNewVideo({ topic: '', youtube_url: '', description: '', duration: '15 min' });
-      fetchAll();
+      setNewVideo({ topic: '', youtube_url: '', description: '', duration: '15 min', thumbnail: '' });
+      fetchAllData();
     } catch (error: any) {
-      console.error('Save video failed:', error);
       toast.error(error?.message || 'Failed to save video.');
     }
   }
 
   async function deleteVideo(id: string) {
-    await supabase.from('videos').delete().eq('id', id);
+    const videoRef = ref(db, `videos/${id}`);
+    await remove(videoRef);
     toast.success('Video deleted.');
-    fetchAll();
+    fetchAllData();
   }
 
-  function editVideo(v: Video) {
+  function editVideo(v: VideoType) {
     setEditVideoId(v.id);
-    setNewVideo({ topic: v.topic, youtube_url: v.youtube_url, description: v.description, duration: v.duration });
+    setNewVideo({
+      topic: v.topic,
+      youtube_url: v.youtube_url,
+      description: v.description || '',
+      duration: v.duration || '15 min',
+      thumbnail: v.thumbnail || ''
+    });
   }
 
-  // Question CRUD
+  // Test Category CRUD
+  async function saveCategory() {
+    if (!newCategory.name) {
+      toast.error('Category name is required.');
+      return;
+    }
+
+    try {
+      if (editCategoryId) {
+        const categoryRef = ref(db, `test_categories/${editCategoryId}`);
+        await update(categoryRef, newCategory);
+        toast.success('Test category updated!');
+        setEditCategoryId(null);
+      } else {
+        const newCategoryRef = push(ref(db, 'test_categories'));
+        await set(newCategoryRef, {
+          ...newCategory,
+          total_questions: 0,
+          created_at: new Date().toISOString()
+        });
+        toast.success('Test category created!');
+      }
+
+      setNewCategory({ name: '', description: '', time_limit: 30, passing_score: 60, is_active: true, icon: '📚' });
+      fetchAllData();
+    } catch (error: any) {
+      toast.error(error?.message || 'Failed to save category.');
+    }
+  }
+
+  async function deleteCategory(id: string) {
+    // Check if there are questions in this category
+    const questionsInCategory = questions.filter(q => q.category_id === id);
+    if (questionsInCategory.length > 0) {
+      toast.error(`Cannot delete category with ${questionsInCategory.length} questions. Move or delete questions first.`);
+      return;
+    }
+    
+    const categoryRef = ref(db, `test_categories/${id}`);
+    await remove(categoryRef);
+    toast.success('Test category deleted.');
+    fetchAllData();
+  }
+
+  function editCategory(cat: TestCategory) {
+    setEditCategoryId(cat.id);
+    setNewCategory({
+      name: cat.name,
+      description: cat.description || '',
+      time_limit: cat.time_limit,
+      passing_score: cat.passing_score,
+      is_active: cat.is_active,
+      icon: cat.icon || '📚'
+    });
+  }
+
+  async function toggleCategoryStatus(id: string, currentStatus: boolean) {
+    const categoryRef = ref(db, `test_categories/${id}`);
+    await update(categoryRef, { is_active: !currentStatus });
+    toast.success(!currentStatus ? 'Category activated!' : 'Category deactivated.');
+    fetchAllData();
+  }
+
+  // Question CRUD with category filter
   async function saveQuestion() {
     if (!newQ.text || !newQ.option_a || !newQ.option_b || !newQ.option_c || !newQ.option_d) {
-      toast.error('Fill all fields.'); return;
+      toast.error('Fill all fields.');
+      return;
     }
-    if (editQId) {
-      await supabase.from('questions').update(newQ).eq('id', editQId);
-      toast.success('Question updated!');
-      setEditQId(null);
-    } else {
-      const maxOrder = questions.length ? Math.max(...questions.map((q) => q.sort_order)) + 1 : 1;
-      await supabase.from('questions').insert({ ...newQ, sort_order: maxOrder });
-      toast.success('Question added!');
+
+    if (!newQ.category_id && testCategories.length > 0) {
+      toast.error('Please select a test category for this question.');
+      return;
     }
-    setNewQ({ text: '', option_a: '', option_b: '', option_c: '', option_d: '', correct_answer: 'A', sort_order: 0 });
-    fetchAll();
+
+    try {
+      if (editQId) {
+        const questionRef = ref(db, `questions/${editQId}`);
+        await update(questionRef, newQ);
+        toast.success('Question updated!');
+        setEditQId(null);
+      } else {
+        const categoryQuestions = questions.filter(q => q.category_id === newQ.category_id);
+        const maxOrder = categoryQuestions.length ? Math.max(...categoryQuestions.map((q) => q.sort_order || 0)) + 1 : 1;
+        const newQuestionRef = push(ref(db, 'questions'));
+        await set(newQuestionRef, {
+          ...newQ,
+          sort_order: maxOrder
+        });
+        
+        // Update category total questions count
+        const categoryRef = ref(db, `test_categories/${newQ.category_id}`);
+        const categorySnapshot = await get(categoryRef);
+        if (categorySnapshot.exists()) {
+          const categoryData = categorySnapshot.val();
+          await update(categoryRef, { total_questions: (categoryData.total_questions || 0) + 1 });
+        }
+        
+        toast.success('New question added to test!');
+      }
+
+      setNewQ({ text: '', option_a: '', option_b: '', option_c: '', option_d: '', correct_answer: 'A', sort_order: 0, category_id: '' });
+      fetchAllData();
+    } catch (error) {
+      toast.error('Failed to save question');
+    }
   }
 
   async function deleteQuestion(id: string) {
-    await supabase.from('questions').delete().eq('id', id);
+    const question = questions.find(q => q.id === id);
+    if (question?.category_id) {
+      const categoryRef = ref(db, `test_categories/${question.category_id}`);
+      const categorySnapshot = await get(categoryRef);
+      if (categorySnapshot.exists()) {
+        const categoryData = categorySnapshot.val();
+        await update(categoryRef, { total_questions: Math.max(0, (categoryData.total_questions || 0) - 1) });
+      }
+    }
+    
+    const questionRef = ref(db, `questions/${id}`);
+    await remove(questionRef);
     toast.success('Question deleted.');
-    fetchAll();
+    fetchAllData();
   }
 
   function editQuestion(q: Question) {
     setEditQId(q.id);
-    setNewQ({ text: q.text, option_a: q.option_a, option_b: q.option_b, option_c: q.option_c, option_d: q.option_d, correct_answer: q.correct_answer as 'A' | 'B' | 'C' | 'D', sort_order: q.sort_order });
+    setNewQ({
+      text: q.text,
+      option_a: q.option_a,
+      option_b: q.option_b,
+      option_c: q.option_c,
+      option_d: q.option_d,
+      correct_answer: q.correct_answer,
+      sort_order: q.sort_order || 0,
+      category_id: q.category_id || ''
+    });
+  }
+
+  // Study Material CRUD
+  async function saveMaterial() {
+    if (!newMaterial.title || !newMaterial.file_url) {
+      toast.error('Title and file URL are required.');
+      return;
+    }
+
+    try {
+      if (editMaterialId) {
+        const materialRef = ref(db, `study_materials/${editMaterialId}`);
+        await update(materialRef, newMaterial);
+        toast.success('Material updated!');
+        setEditMaterialId(null);
+      } else {
+        const newMaterialRef = push(ref(db, 'study_materials'));
+        await set(newMaterialRef, {
+          ...newMaterial,
+          created_at: new Date().toISOString(),
+          downloads: 0
+        });
+        toast.success('Study material uploaded!');
+      }
+
+      setNewMaterial({ title: '', description: '', file_url: '', file_type: 'pdf', subject: '', size: '2.5 MB' });
+      fetchAllData();
+    } catch (error: any) {
+      toast.error(error?.message || 'Failed to save material.');
+    }
+  }
+
+  async function deleteMaterial(id: string) {
+    const materialRef = ref(db, `study_materials/${id}`);
+    await remove(materialRef);
+    toast.success('Material deleted.');
+    fetchAllData();
+  }
+
+  function editMaterial(m: StudyMaterial) {
+    setEditMaterialId(m.id);
+    setNewMaterial({
+      title: m.title,
+      description: m.description || '',
+      file_url: m.file_url,
+      file_type: m.file_type,
+      subject: m.subject || '',
+      size: m.size || '2.5 MB'
+    });
+  }
+
+  // Live Class CRUD
+  async function saveLiveClass() {
+    if (!newLiveClass.title || !newLiveClass.youtube_stream_url) {
+      toast.error('Title and YouTube stream URL are required.');
+      return;
+    }
+
+    try {
+      if (editLiveId) {
+        const liveRef = ref(db, `live_classes/${editLiveId}`);
+        await update(liveRef, newLiveClass);
+        toast.success('Live class updated!');
+        setEditLiveId(null);
+      } else {
+        const newLiveRef = push(ref(db, 'live_classes'));
+        await set(newLiveRef, {
+          ...newLiveClass,
+          created_at: new Date().toISOString(),
+          viewers: 0
+        });
+        toast.success('Live class scheduled!');
+      }
+
+      setNewLiveClass({ title: '', youtube_stream_url: '', scheduled_at: '', duration: '60', description: '', is_live: false });
+      fetchAllData();
+    } catch (error: any) {
+      toast.error(error?.message || 'Failed to save live class.');
+    }
+  }
+
+  async function deleteLiveClass(id: string) {
+    const liveRef = ref(db, `live_classes/${id}`);
+    await remove(liveRef);
+    toast.success('Live class removed.');
+    fetchAllData();
+  }
+
+  async function toggleLiveStatus(id: string, currentStatus: boolean) {
+    try {
+      const liveRef = ref(db, `live_classes/${id}`);
+      await update(liveRef, { is_live: !currentStatus });
+      toast.success(!currentStatus ? '🟢 Class is now LIVE!' : 'Class ended.');
+      fetchAllData();
+    } catch (error) {
+      toast.error('Failed to update live status.');
+    }
+  }
+
+  function editLiveClass(l: LiveClass) {
+    setEditLiveId(l.id);
+    setNewLiveClass({
+      title: l.title,
+      youtube_stream_url: l.youtube_stream_url,
+      scheduled_at: l.scheduled_at,
+      duration: l.duration,
+      description: l.description || '',
+      is_live: l.is_live
+    });
   }
 
   const filteredResults = results.filter((r) =>
-    r.student_name.toLowerCase().includes(search.toLowerCase()) ||
-    r.code.toLowerCase().includes(search.toLowerCase())
+    r.student_name?.toLowerCase().includes(search.toLowerCase()) ||
+    r.code?.toLowerCase().includes(search.toLowerCase())
   );
 
-  const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
-    { id: 'results', label: 'Results', icon: <BarChart3 className="w-4 h-4" /> },
-    { id: 'codes', label: 'Codes', icon: <Lock className="w-4 h-4" /> },
-    { id: 'videos', label: 'Videos', icon: <BookOpen className="w-4 h-4" /> },
-    { id: 'questions', label: 'Questions', icon: <FileQuestion className="w-4 h-4" /> },
+  const filteredQuestions = selectedCategory 
+    ? questions.filter(q => q.category_id === selectedCategory)
+    : questions;
+
+  const tabs: { id: Tab; label: string; icon: React.ReactNode; color: string }[] = [
+    { id: 'results', label: 'Results', icon: <BarChart3 className="w-4 h-4" />, color: 'from-blue-500 to-cyan-500' },
+    { id: 'codes', label: 'Codes', icon: <Lock className="w-4 h-4" />, color: 'from-purple-500 to-pink-500' },
+    { id: 'test-categories', label: 'Test Folders', icon: <FolderOpen className="w-4 h-4" />, color: 'from-teal-500 to-emerald-500' },
+    { id: 'questions', label: 'Question Bank', icon: <FileQuestion className="w-4 h-4" />, color: 'from-indigo-500 to-violet-500' },
+    { id: 'videos', label: 'Video Library', icon: <Video className="w-4 h-4" />, color: 'from-red-500 to-orange-500' },
+    { id: 'live', label: 'Live Classes', icon: <Monitor className="w-4 h-4" />, color: 'from-green-500 to-emerald-500' },
+    { id: 'materials', label: 'Study Material', icon: <FolderOpen className="w-4 h-4" />, color: 'from-yellow-500 to-amber-500' },
   ];
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#0F172A] flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-12 h-12 border-4 border-[#6366F1] border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-slate-400">Loading dashboard...</p>
+        </div>
+      </div>
+    );
+  }
 
   // LOGIN SCREEN
   if (!isLoggedIn) {
     return (
-      <div className="min-h-screen bg-[#0F172A] flex items-center justify-center px-4 pt-16">
-        <div className="w-full max-w-sm">
+      <div className="min-h-screen bg-gradient-to-br from-[#0F172A] via-[#1E1B4B] to-[#0F172A] flex items-center justify-center px-4">
+        <div className="absolute inset-0 bg-[url('https://images.unsplash.com/photo-1506905925346-21bda4d32df4?q=80&w=2070')] opacity-5 bg-cover bg-center"></div>
+        <div className="relative z-10 w-full max-w-md">
           <div className="text-center mb-8">
-            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#6366F1] to-[#8B5CF6] flex items-center justify-center mx-auto mb-4">
-              <Lock className="w-7 h-7 text-white" />
+            <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-[#6366F1] to-[#8B5CF6] flex items-center justify-center mx-auto mb-4 shadow-2xl shadow-indigo-500/30">
+              <Sparkles className="w-10 h-10 text-white" />
             </div>
-            <h1 className="text-2xl font-bold text-white mb-1">Admin Dashboard</h1>
-            <p className="text-slate-500 text-sm">Enter your password to continue</p>
+            <h1 className="text-3xl font-bold bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent mb-2">Sankalpasiddhi</h1>
+            <p className="text-slate-500 text-sm">Admin Dashboard • Secure Access Only</p>
           </div>
-          <form onSubmit={handleLogin} className="bg-[#1E293B] rounded-2xl p-6 border border-white/10">
-            <label className="block text-slate-300 text-sm font-medium mb-2">Password</label>
+          <form onSubmit={handleLogin} className="bg-[#1E293B]/80 backdrop-blur-xl rounded-2xl p-8 border border-white/10 shadow-2xl">
+            <label className="block text-slate-300 text-sm font-medium mb-2">Access Password</label>
             <div className="relative">
               <input
                 type={showPw ? 'text' : 'password'}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="Enter admin password"
-                className="w-full px-4 py-3 pr-10 rounded-xl bg-[#0F172A] border border-white/10 text-white placeholder-slate-600 text-sm focus:outline-none focus:border-[#6366F1] focus:ring-1 focus:ring-[#6366F1] transition-colors"
+                placeholder="Enter your secret key..."
+                className="w-full px-4 py-3 pr-10 rounded-xl bg-[#0F172A] border border-white/10 text-white placeholder-slate-600 text-sm focus:outline-none focus:border-[#6366F1] focus:ring-2 focus:ring-[#6366F1]/20 transition-all"
               />
               <button
                 type="button"
@@ -240,9 +714,9 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
             </div>
             <button
               type="submit"
-              className="mt-4 w-full py-3 rounded-xl bg-gradient-to-r from-[#6366F1] to-[#8B5CF6] text-white font-semibold text-sm hover:shadow-lg hover:shadow-indigo-500/30 transition-all duration-200"
+              className="mt-6 w-full py-3 rounded-xl bg-gradient-to-r from-[#6366F1] to-[#8B5CF6] text-white font-semibold text-sm hover:shadow-xl hover:shadow-indigo-500/30 transition-all duration-300 transform hover:scale-[1.02]"
             >
-              Login
+              Enter Dashboard
             </button>
           </form>
         </div>
@@ -250,44 +724,67 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
     );
   }
 
-  // DASHBOARD
+  // MAIN DASHBOARD
   return (
-    <div className="min-h-screen bg-[#0F172A] pt-20 pb-16 px-4">
-      <div className="max-w-6xl mx-auto">
+    <div className="min-h-screen bg-gradient-to-br from-[#0F172A] via-[#1E1B4B] to-[#0F172A] pt-20 pb-16 px-4">
+      <div className="absolute inset-0 bg-[url('https://images.unsplash.com/photo-1506905925346-21bda4d32df4?q=80&w=2070')] opacity-5 bg-cover bg-center pointer-events-none"></div>
+
+      <div className="relative z-10 max-w-7xl mx-auto">
+        {/* Header */}
         <div className="mb-8">
-          <h1 className="text-2xl font-bold text-white">Admin Dashboard</h1>
-          <p className="text-slate-500 text-sm mt-1">Manage students, tests, videos and questions</p>
+          <div className="flex items-center justify-between flex-wrap gap-4">
+            <div>
+              <h1 className="text-3xl font-bold bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent">Admin Dashboard</h1>
+              <p className="text-slate-500 text-sm mt-1">Manage your entire Sanskrit learning platform</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-medium">
+                <GraduationCap className="w-3 h-3 inline mr-1" />
+                {totalStudents} Students
+              </div>
+              <div className="px-3 py-1.5 rounded-full bg-teal-500/10 border border-teal-500/20 text-teal-400 text-xs font-medium">
+                <FolderOpen className="w-3 h-3 inline mr-1" />
+                {totalCategories} Test Folders
+              </div>
+            </div>
+          </div>
         </div>
 
-        {/* Stats */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+        {/* Stats Cards */}
+        <div className="grid grid-cols-2 lg:grid-cols-7 gap-4 mb-8">
           {[
-            { label: 'Total Students', value: totalStudents, icon: <Users className="w-5 h-5" />, color: 'text-blue-400', bg: 'bg-blue-500/10' },
-            { label: 'Average Score', value: `${avgScore}%`, icon: <BarChart3 className="w-5 h-5" />, color: 'text-[#6366F1]', bg: 'bg-[#6366F1]/10' },
-            { label: 'Pass Rate', value: `${passRate}%`, icon: <TrendingUp className="w-5 h-5" />, color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
-            { label: 'Highest Score', value: `${highest}%`, icon: <Award className="w-5 h-5" />, color: 'text-amber-400', bg: 'bg-amber-500/10' },
+            { label: 'Total Students', value: totalStudents, icon: <Users className="w-5 h-5" />, color: 'text-blue-400', bg: 'bg-blue-500/10', gradient: 'from-blue-500 to-cyan-500' },
+            { label: 'Avg Score', value: `${avgScore}%`, icon: <BarChart3 className="w-5 h-5" />, color: 'text-[#6366F1]', bg: 'bg-[#6366F1]/10', gradient: 'from-indigo-500 to-purple-500' },
+            { label: 'Pass Rate', value: `${passRate}%`, icon: <TrendingUp className="w-5 h-5" />, color: 'text-emerald-400', bg: 'bg-emerald-500/10', gradient: 'from-emerald-500 to-teal-500' },
+            { label: 'Highest', value: `${highest}%`, icon: <Award className="w-5 h-5" />, color: 'text-amber-400', bg: 'bg-amber-500/10', gradient: 'from-amber-500 to-orange-500' },
+            { label: 'Test Folders', value: totalCategories, icon: <FolderOpen className="w-5 h-5" />, color: 'text-teal-400', bg: 'bg-teal-500/10', gradient: 'from-teal-500 to-emerald-500' },
+            { label: 'Materials', value: totalMaterials, icon: <Library className="w-5 h-5" />, color: 'text-rose-400', bg: 'bg-rose-500/10', gradient: 'from-rose-500 to-pink-500' },
+            { label: 'Live Classes', value: activeLiveClasses, icon: <Calendar className="w-5 h-5" />, color: 'text-violet-400', bg: 'bg-violet-500/10', gradient: 'from-violet-500 to-purple-500' },
           ].map((s) => (
-            <div key={s.label} className="bg-[#1E293B] rounded-2xl p-5 border border-white/5">
-              <div className={`w-9 h-9 rounded-xl ${s.bg} flex items-center justify-center mb-3 ${s.color}`}>
+            <div key={s.label} className="group relative bg-[#1E293B]/80 backdrop-blur-sm rounded-2xl p-5 border border-white/10 hover:border-white/20 transition-all duration-300 hover:scale-105 hover:shadow-xl">
+              <div className={`absolute inset-0 bg-gradient-to-br ${s.gradient} opacity-0 group-hover:opacity-5 rounded-2xl transition-opacity duration-300`}></div>
+              <div className={`w-10 h-10 rounded-xl ${s.bg} flex items-center justify-center mb-3 ${s.color} group-hover:scale-110 transition-transform`}>
                 {s.icon}
               </div>
               <div className="text-2xl font-bold text-white mb-0.5">{s.value}</div>
-              <div className="text-slate-500 text-xs">{s.label}</div>
+              <div className="text-slate-500 text-xs font-medium">{s.label}</div>
             </div>
           ))}
         </div>
 
         {/* Tabs */}
-        <div className="flex gap-1 bg-[#1E293B] rounded-xl p-1 mb-6 w-fit border border-white/5">
+        <div className="flex flex-wrap gap-1.5 bg-[#1E293B]/50 backdrop-blur-sm rounded-xl p-1.5 mb-6 border border-white/5">
           {tabs.map((tab) => (
             <button
               key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
-                activeTab === tab.id
-                  ? 'bg-[#6366F1] text-white shadow-lg shadow-indigo-500/20'
+              onClick={() => {
+                setActiveTab(tab.id);
+                setSelectedCategory(null);
+              }}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-300 ${activeTab === tab.id
+                  ? `bg-gradient-to-r ${tab.color} text-white shadow-lg shadow-indigo-500/20`
                   : 'text-slate-400 hover:text-white hover:bg-white/5'
-              }`}
+                }`}
             >
               {tab.icon} {tab.label}
             </button>
@@ -296,7 +793,7 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
 
         {/* RESULTS TAB */}
         {activeTab === 'results' && (
-          <div>
+          <div className="animate-fadeIn">
             <div className="flex flex-col sm:flex-row gap-3 mb-4">
               <div className="relative flex-1">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
@@ -304,44 +801,53 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
                   type="text"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Search by name or code..."
-                  className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-[#1E293B] border border-white/10 text-white placeholder-slate-600 text-sm focus:outline-none focus:border-[#6366F1] transition-colors"
+                  placeholder="Search by student name or code..."
+                  className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-[#1E293B] border border-white/10 text-white placeholder-slate-600 text-sm focus:outline-none focus:border-[#6366F1] focus:ring-2 focus:ring-[#6366F1]/20 transition-all"
                 />
               </div>
               <button
                 onClick={exportCSV}
-                className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600/20 border border-emerald-500/30 text-emerald-400 text-sm font-medium hover:bg-emerald-600/30 transition-colors"
+                className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600/20 to-emerald-500/20 border border-emerald-500/30 text-emerald-400 text-sm font-medium hover:shadow-lg hover:shadow-emerald-500/10 transition-all"
               >
                 <Download className="w-4 h-4" /> Export CSV
               </button>
             </div>
 
-            <div className="bg-[#1E293B] rounded-2xl border border-white/5 overflow-hidden">
+            <div className="bg-[#1E293B]/80 backdrop-blur-sm rounded-2xl border border-white/10 overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="border-b border-white/10">
-                      {['Student Name', 'Code', 'Score', 'Percentage', 'Date'].map((h) => (
-                        <th key={h} className="px-5 py-3.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">{h}</th>
+                    <tr className="border-b border-white/10 bg-white/5">
+                      {['Student Name', 'Code', 'Test', 'Score', 'Percentage', 'Date'].map((h) => (
+                        <th key={h} className="px-5 py-3.5 text-left text-xs font-semibold text-slate-400 uppercase tracking-wider">{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
                     {filteredResults.length === 0 ? (
-                      <tr><td colSpan={5} className="px-5 py-10 text-center text-slate-600">No results yet.</td></tr>
-                    ) : filteredResults.map((r) => (
-                      <tr key={r.id} className="border-b border-white/5 hover:bg-white/2 transition-colors">
-                        <td className="px-5 py-3.5 text-white font-medium">{r.student_name}</td>
-                        <td className="px-5 py-3.5 text-slate-400 font-mono text-xs">{r.code}</td>
-                        <td className="px-5 py-3.5 text-white">{r.score}/{r.total_questions}</td>
-                        <td className="px-5 py-3.5">
-                          <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${r.percentage >= 60 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'}`}>
-                            {r.percentage}%
-                          </span>
-                        </td>
-                        <td className="px-5 py-3.5 text-slate-500 text-xs">{new Date(r.completed_on).toLocaleString()}</td>
+                      <tr>
+                        <td colSpan={6} className="px-5 py-12 text-center text-slate-600">📭 No test results yet</td>
                       </tr>
-                    ))}
+                    ) : (
+                      filteredResults.map((r) => (
+                        <tr key={r.id} className="border-b border-white/5 hover:bg-white/5 transition-colors">
+                          <td className="px-5 py-3.5 text-white font-medium">{r.student_name}</td>
+                          <td className="px-5 py-3.5 text-slate-400 font-mono text-xs">{r.code}</td>
+                          <td className="px-5 py-3.5">
+                            <span className="px-2 py-0.5 rounded-full bg-teal-500/20 text-teal-400 text-xs font-medium">
+                              {r.category_name || 'General'}
+                            </span>
+                          </td>
+                          <td className="px-5 py-3.5 text-white font-semibold">{r.score}/{r.total_questions}</td>
+                          <td className="px-5 py-3.5">
+                            <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${r.percentage >= 60 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'}`}>
+                              {r.percentage}%
+                            </span>
+                          </td>
+                          <td className="px-5 py-3.5 text-slate-500 text-xs">{new Date(r.completed_on).toLocaleString()}</td>
+                        </tr>
+                      ))
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -351,31 +857,33 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
 
         {/* CODES TAB */}
         {activeTab === 'codes' && (
-          <div className="grid lg:grid-cols-5 gap-6">
-            {/* Generate code */}
+          <div className="grid lg:grid-cols-5 gap-6 animate-fadeIn">
             <div className="lg:col-span-2">
-              <div className="bg-[#1E293B] rounded-2xl p-5 border border-white/10">
+              <div className="bg-[#1E293B]/80 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
                 <h3 className="text-white font-semibold mb-4 flex items-center gap-2">
-                  <Plus className="w-4 h-4 text-[#6366F1]" /> Generate New Code
+                  <div className="w-6 h-6 rounded-lg bg-gradient-to-r from-[#6366F1] to-[#8B5CF6] flex items-center justify-center">
+                    <Plus className="w-3.5 h-3.5 text-white" />
+                  </div>
+                  Generate New Code
                 </h3>
-                <label className="block text-slate-400 text-xs mb-1.5">Student Name</label>
+                <label className="block text-slate-400 text-xs mb-1.5 font-medium">Student Name</label>
                 <input
                   type="text"
                   value={newStudentName}
                   onChange={(e) => setNewStudentName(e.target.value)}
-                  placeholder="e.g. Rahul Verma"
-                  className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white placeholder-slate-600 text-sm focus:outline-none focus:border-[#6366F1] transition-colors mb-3"
+                  placeholder="e.g., Rahul Verma"
+                  className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white placeholder-slate-600 text-sm focus:outline-none focus:border-[#6366F1] transition-all mb-3"
                 />
                 <button
                   onClick={generateCode}
-                  className="w-full py-2.5 rounded-xl border border-[#6366F1]/50 text-[#6366F1] text-sm font-medium hover:bg-[#6366F1]/10 transition-colors mb-3"
+                  className="w-full py-2.5 rounded-xl border border-[#6366F1]/50 text-[#6366F1] text-sm font-medium hover:bg-[#6366F1]/10 transition-all mb-3"
                 >
-                  Generate Code
+                  Generate Unique Code
                 </button>
                 {generatedCode && (
-                  <div className="flex items-center gap-2 p-3 bg-[#0F172A] rounded-xl border border-white/10 mb-3">
-                    <span className="font-mono text-emerald-400 text-sm flex-1 tracking-wider">{generatedCode}</span>
-                    <button onClick={() => copyCode(generatedCode)} className="text-slate-400 hover:text-white">
+                  <div className="flex items-center gap-2 p-3 bg-gradient-to-r from-[#6366F1]/10 to-[#8B5CF6]/10 rounded-xl border border-[#6366F1]/20 mb-3">
+                    <span className="font-mono text-emerald-400 text-sm flex-1 tracking-wider font-bold">{generatedCode}</span>
+                    <button onClick={() => copyCode(generatedCode)} className="text-slate-400 hover:text-white transition-colors p-1">
                       {copiedCode === generatedCode ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
                     </button>
                   </div>
@@ -383,34 +891,30 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
                 {generatedCode && (
                   <button
                     onClick={saveCode}
-                    className="w-full py-2.5 rounded-xl bg-gradient-to-r from-[#6366F1] to-[#8B5CF6] text-white text-sm font-semibold hover:shadow-lg hover:shadow-indigo-500/20 transition-all"
+                    className="w-full py-2.5 rounded-xl bg-gradient-to-r from-[#6366F1] to-[#8B5CF6] text-white text-sm font-semibold hover:shadow-lg hover:shadow-indigo-500/30 transition-all"
                   >
-                    Save Code
+                    Save & Issue Code
                   </button>
                 )}
               </div>
             </div>
 
-            {/* Code list */}
             <div className="lg:col-span-3">
-              <div className="bg-[#1E293B] rounded-2xl border border-white/5 overflow-hidden">
-                <div className="px-5 py-3.5 border-b border-white/10">
-                  <span className="text-white font-semibold text-sm">All Codes ({codes.length})</span>
+              <div className="bg-[#1E293B]/80 backdrop-blur-sm rounded-2xl border border-white/10 overflow-hidden">
+                <div className="px-5 py-3.5 border-b border-white/10 bg-white/5">
+                  <span className="text-white font-semibold text-sm">📋 Issued Codes ({codes.length})</span>
                 </div>
                 <div className="divide-y divide-white/5 max-h-96 overflow-y-auto">
                   {codes.map((c) => (
-                    <div key={c.id} className="flex items-center gap-3 px-5 py-3">
+                    <div key={c.id} className="flex items-center gap-3 px-5 py-3 hover:bg-white/5 transition-colors">
                       <div className="flex-1 min-w-0">
                         <div className="text-white text-sm font-medium">{c.student_name}</div>
                         <div className="text-slate-500 font-mono text-xs mt-0.5">{c.code}</div>
                       </div>
                       <span className={`px-2 py-0.5 rounded-full text-xs font-semibold flex-shrink-0 ${c.used ? 'bg-slate-700 text-slate-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
-                        {c.used ? 'Used' : 'Unused'}
+                        {c.used ? 'Used' : 'Available'}
                       </span>
-                      {c.test_score !== null && (
-                        <span className="text-slate-400 text-xs">{c.test_score}/{questions.length}</span>
-                      )}
-                      <button onClick={() => copyCode(c.code)} className="text-slate-500 hover:text-white transition-colors">
+                      <button onClick={() => copyCode(c.code)} className="text-slate-500 hover:text-white transition-colors p-1">
                         {copiedCode === c.code ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
                       </button>
                     </div>
@@ -421,121 +925,97 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
           </div>
         )}
 
-        {/* VIDEOS TAB */}
-        {activeTab === 'videos' && (
-          <div className="grid lg:grid-cols-5 gap-6">
+        {/* TEST CATEGORIES TAB */}
+        {activeTab === 'test-categories' && (
+          <div className="grid lg:grid-cols-5 gap-6 animate-fadeIn">
             <div className="lg:col-span-2">
-              <div className="bg-[#1E293B] rounded-2xl p-5 border border-white/10">
+              <div className="bg-[#1E293B]/80 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
                 <h3 className="text-white font-semibold mb-4 flex items-center gap-2">
-                  <Plus className="w-4 h-4 text-[#6366F1]" /> {editVideoId ? 'Edit Video' : 'Add New Video'}
-                </h3>
-                {(['topic', 'youtube_url', 'description', 'duration'] as const).map((field) => (
-                  <div key={field} className="mb-3">
-                    <label className="block text-slate-400 text-xs mb-1.5 capitalize">{field.replace('_', ' ')}</label>
-                    <input
-                      type="text"
-                      value={newVideo[field]}
-                      onChange={(e) => setNewVideo({ ...newVideo, [field]: e.target.value })}
-                      placeholder={field === 'youtube_url' ? 'https://www.youtube.com/embed/...' : field === 'duration' ? '15 min' : ''}
-                      className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white placeholder-slate-600 text-sm focus:outline-none focus:border-[#6366F1] transition-colors"
-                    />
+                  <div className="w-6 h-6 rounded-lg bg-gradient-to-r from-teal-500 to-emerald-500 flex items-center justify-center">
+                    <FolderPlus className="w-3.5 h-3.5 text-white" />
                   </div>
-                ))}
-                <div className="flex gap-2">
-                  <button
-                    onClick={saveVideo}
-                    className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-[#6366F1] to-[#8B5CF6] text-white text-sm font-semibold hover:shadow-lg transition-all"
-                  >
-                    {editVideoId ? 'Update' : 'Add Video'}
-                  </button>
-                  {editVideoId && (
-                    <button
-                      onClick={() => { setEditVideoId(null); setNewVideo({ topic: '', youtube_url: '', description: '', duration: '15 min' }); }}
-                      className="px-4 py-2.5 rounded-xl border border-white/10 text-slate-400 text-sm hover:bg-white/5 transition-colors"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-            <div className="lg:col-span-3">
-              <div className="bg-[#1E293B] rounded-2xl border border-white/5 overflow-hidden">
-                <div className="divide-y divide-white/5">
-                  {videos.map((v) => (
-                    <div key={v.id} className="flex items-center gap-3 px-5 py-3.5">
-                      <div className="flex-1 min-w-0">
-                        <div className="text-white text-sm font-medium truncate">{v.topic}</div>
-                        <div className="text-slate-500 text-xs mt-0.5 truncate">{v.youtube_url}</div>
-                      </div>
-                      <span className="text-slate-600 text-xs flex-shrink-0">{v.duration}</span>
-                      <button onClick={() => editVideo(v)} className="text-slate-500 hover:text-[#6366F1] transition-colors">
-                        <Edit className="w-4 h-4" />
-                      </button>
-                      <button onClick={() => deleteVideo(v.id)} className="text-slate-500 hover:text-red-400 transition-colors">
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* QUESTIONS TAB */}
-        {activeTab === 'questions' && (
-          <div className="grid lg:grid-cols-5 gap-6">
-            <div className="lg:col-span-2">
-              <div className="bg-[#1E293B] rounded-2xl p-5 border border-white/10">
-                <h3 className="text-white font-semibold mb-4 flex items-center gap-2">
-                  <Plus className="w-4 h-4 text-[#6366F1]" /> {editQId ? 'Edit Question' : 'Add New Question'}
+                  {editCategoryId ? 'Edit Test Folder' : 'Create Test Folder'}
                 </h3>
                 <div className="mb-3">
-                  <label className="block text-slate-400 text-xs mb-1.5">Question Text (Sanskrit)</label>
-                  <textarea
-                    value={newQ.text}
-                    onChange={(e) => setNewQ({ ...newQ, text: e.target.value })}
-                    rows={3}
-                    className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white placeholder-slate-600 text-sm focus:outline-none focus:border-[#6366F1] transition-colors resize-none"
-                    style={{ fontFamily: "'Noto Serif Devanagari', serif" }}
+                  <label className="block text-slate-400 text-xs mb-1.5 font-medium">Folder Name</label>
+                  <input
+                    type="text"
+                    value={newCategory.name}
+                    onChange={(e) => setNewCategory({ ...newCategory, name: e.target.value })}
+                    placeholder="e.g., Sanskrit Unit 1 Test"
+                    className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white text-sm focus:outline-none focus:border-[#6366F1] transition-all"
                   />
                 </div>
-                {(['option_a', 'option_b', 'option_c', 'option_d'] as const).map((opt) => (
-                  <div key={opt} className="mb-2">
-                    <label className="block text-slate-400 text-xs mb-1 uppercase">{opt.replace('_', ' ')}</label>
+                <div className="mb-3">
+                  <label className="block text-slate-400 text-xs mb-1.5 font-medium">Description</label>
+                  <textarea
+                    value={newCategory.description}
+                    onChange={(e) => setNewCategory({ ...newCategory, description: e.target.value })}
+                    rows={2}
+                    placeholder="Describe what this test covers..."
+                    className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white text-sm focus:outline-none focus:border-[#6366F1] transition-all resize-none"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3 mb-3">
+                  <div>
+                    <label className="block text-slate-400 text-xs mb-1.5 font-medium flex items-center gap-1">
+                      <Timer className="w-3 h-3" /> Time Limit (minutes)
+                    </label>
                     <input
-                      type="text"
-                      value={newQ[opt]}
-                      onChange={(e) => setNewQ({ ...newQ, [opt]: e.target.value })}
-                      className="w-full px-3 py-2 rounded-xl bg-[#0F172A] border border-white/10 text-white text-sm focus:outline-none focus:border-[#6366F1] transition-colors"
-                      style={{ fontFamily: "'Noto Serif Devanagari', serif" }}
+                      type="number"
+                      value={newCategory.time_limit}
+                      onChange={(e) => setNewCategory({ ...newCategory, time_limit: parseInt(e.target.value) })}
+                      min={1}
+                      max={180}
+                      className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white text-sm focus:outline-none focus:border-[#6366F1] transition-all"
                     />
                   </div>
-                ))}
-                <div className="mb-4">
-                  <label className="block text-slate-400 text-xs mb-1.5">Correct Answer</label>
-                  <div className="relative">
-                    <select
-                      value={newQ.correct_answer}
-                      onChange={(e) => setNewQ({ ...newQ, correct_answer: e.target.value as 'A' | 'B' | 'C' | 'D' })}
-                      className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white text-sm focus:outline-none focus:border-[#6366F1] appearance-none transition-colors"
-                    >
-                      {['A', 'B', 'C', 'D'].map((o) => <option key={o} value={o}>Option {o}</option>)}
-                    </select>
-                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
+                  <div>
+                    <label className="block text-slate-400 text-xs mb-1.5 font-medium flex items-center gap-1">
+                      <Award className="w-3 h-3" /> Passing Score (%)
+                    </label>
+                    <input
+                      type="number"
+                      value={newCategory.passing_score}
+                      onChange={(e) => setNewCategory({ ...newCategory, passing_score: parseInt(e.target.value) })}
+                      min={0}
+                      max={100}
+                      className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white text-sm focus:outline-none focus:border-[#6366F1] transition-all"
+                    />
                   </div>
+                </div>
+                <div className="mb-3">
+                  <label className="block text-slate-400 text-xs mb-1.5 font-medium">Icon (emoji)</label>
+                  <input
+                    type="text"
+                    value={newCategory.icon}
+                    onChange={(e) => setNewCategory({ ...newCategory, icon: e.target.value })}
+                    placeholder="📚"
+                    maxLength={2}
+                    className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white text-sm focus:outline-none focus:border-[#6366F1] transition-all"
+                  />
+                </div>
+                <div className="mb-4">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={newCategory.is_active}
+                      onChange={(e) => setNewCategory({ ...newCategory, is_active: e.target.checked })}
+                      className="w-4 h-4 rounded border-white/10 bg-[#0F172A] text-[#6366F1] focus:ring-[#6366F1]"
+                    />
+                    <span className="text-slate-400 text-xs">Active (students can take this test)</span>
+                  </label>
                 </div>
                 <div className="flex gap-2">
                   <button
-                    onClick={saveQuestion}
-                    className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-[#6366F1] to-[#8B5CF6] text-white text-sm font-semibold hover:shadow-lg transition-all"
+                    onClick={saveCategory}
+                    className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-teal-500 to-emerald-500 text-white text-sm font-semibold hover:shadow-lg hover:shadow-teal-500/30 transition-all"
                   >
-                    {editQId ? 'Update' : 'Add Question'}
+                    {editCategoryId ? 'Update Folder' : 'Create Folder'}
                   </button>
-                  {editQId && (
+                  {editCategoryId && (
                     <button
-                      onClick={() => { setEditQId(null); setNewQ({ text: '', option_a: '', option_b: '', option_c: '', option_d: '', correct_answer: 'A', sort_order: 0 }); }}
+                      onClick={() => { setEditCategoryId(null); setNewCategory({ name: '', description: '', time_limit: 30, passing_score: 60, is_active: true, icon: '📚' }); }}
                       className="px-4 py-2.5 rounded-xl border border-white/10 text-slate-400 text-sm hover:bg-white/5 transition-colors"
                     >
                       <X className="w-4 h-4" />
@@ -545,25 +1025,47 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
               </div>
             </div>
             <div className="lg:col-span-3">
-              <div className="bg-[#1E293B] rounded-2xl border border-white/5 overflow-hidden">
-                <div className="divide-y divide-white/5 max-h-[600px] overflow-y-auto">
-                  {questions.map((q, i) => (
-                    <div key={q.id} className="px-5 py-4">
+              <div className="bg-[#1E293B]/80 backdrop-blur-sm rounded-2xl border border-white/10 overflow-hidden">
+                <div className="px-5 py-3.5 border-b border-white/10 bg-white/5">
+                  <span className="text-white font-semibold text-sm">📁 Test Folders ({testCategories.length})</span>
+                </div>
+                <div className="divide-y divide-white/5 max-h-[500px] overflow-y-auto">
+                  {testCategories.map((cat) => (
+                    <div key={cat.id} className="px-5 py-4 hover:bg-white/5 transition-colors">
                       <div className="flex items-start gap-3">
-                        <span className="w-6 h-6 rounded-full bg-[#6366F1]/20 text-[#6366F1] text-xs font-bold flex items-center justify-center flex-shrink-0 mt-0.5">
-                          {i + 1}
-                        </span>
+                        <div className="text-3xl">{cat.icon || '📚'}</div>
                         <div className="flex-1 min-w-0">
-                          <p className="text-white text-sm leading-relaxed line-clamp-2" style={{ fontFamily: "'Noto Serif Devanagari', serif" }}>{q.text}</p>
-                          <div className="flex items-center gap-2 mt-1.5">
-                            <span className="text-xs text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full">Correct: {q.correct_answer}</span>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <h4 className="text-white font-semibold">{cat.name}</h4>
+                            <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${cat.is_active ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'}`}>
+                              {cat.is_active ? 'Active' : 'Inactive'}
+                            </span>
+                          </div>
+                          <p className="text-slate-500 text-xs mt-1">{cat.description}</p>
+                          <div className="flex items-center gap-4 mt-2">
+                            <span className="text-slate-400 text-xs flex items-center gap-1">
+                              <Timer className="w-3 h-3" /> {cat.time_limit} min
+                            </span>
+                            <span className="text-slate-400 text-xs flex items-center gap-1">
+                              <FileQuestion className="w-3 h-3" /> {cat.total_questions || 0} questions
+                            </span>
+                            <span className="text-slate-400 text-xs flex items-center gap-1">
+                              <Award className="w-3 h-3" /> Pass: {cat.passing_score}%
+                            </span>
                           </div>
                         </div>
-                        <div className="flex gap-1.5 flex-shrink-0">
-                          <button onClick={() => editQuestion(q)} className="text-slate-500 hover:text-[#6366F1] transition-colors p-1">
+                        <div className="flex gap-1.5">
+                          <button
+                            onClick={() => toggleCategoryStatus(cat.id, cat.is_active)}
+                            className={`p-1.5 rounded-lg transition-colors ${cat.is_active ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'}`}
+                            title={cat.is_active ? 'Deactivate' : 'Activate'}
+                          >
+                            {cat.is_active ? <StopCircle className="w-4 h-4" /> : <PlayCircle className="w-4 h-4" />}
+                          </button>
+                          <button onClick={() => editCategory(cat)} className="text-slate-500 hover:text-[#6366F1] transition-colors p-1">
                             <Edit className="w-4 h-4" />
                           </button>
-                          <button onClick={() => deleteQuestion(q.id)} className="text-slate-500 hover:text-red-400 transition-colors p-1">
+                          <button onClick={() => deleteCategory(cat.id)} className="text-slate-500 hover:text-red-400 transition-colors p-1">
                             <Trash2 className="w-4 h-4" />
                           </button>
                         </div>
@@ -575,7 +1077,583 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
             </div>
           </div>
         )}
+
+        {/* QUESTIONS TAB with Category Filter */}
+        {activeTab === 'questions' && (
+          <div className="grid lg:grid-cols-5 gap-6 animate-fadeIn">
+            <div className="lg:col-span-2">
+              <div className="bg-[#1E293B]/80 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
+                <h3 className="text-white font-semibold mb-4 flex items-center gap-2">
+                  <div className="w-6 h-6 rounded-lg bg-gradient-to-r from-indigo-500 to-violet-500 flex items-center justify-center">
+                    <FileQuestion className="w-3.5 h-3.5 text-white" />
+                  </div>
+                  {editQId ? 'Edit Question' : 'Add Sanskrit Question'}
+                </h3>
+                
+                {/* Category Selector */}
+                <div className="mb-3">
+                  <label className="block text-slate-400 text-xs mb-1.5 font-medium flex items-center gap-1">
+                    <FolderOpen className="w-3 h-3" /> Test Folder
+                  </label>
+                  <select
+                    value={newQ.category_id}
+                    onChange={(e) => setNewQ({ ...newQ, category_id: e.target.value })}
+                    className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white text-sm focus:outline-none focus:border-[#6366F1] transition-all"
+                  >
+                    <option value="">Select a test folder</option>
+                    {testCategories.map((cat) => (
+                      <option key={cat.id} value={cat.id}>
+                        {cat.icon} {cat.name} ({cat.time_limit} min)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                
+                <div className="mb-3">
+                  <label className="block text-slate-400 text-xs mb-1.5 font-medium">Question Text (Sanskrit)</label>
+                  <textarea
+                    value={newQ.text}
+                    onChange={(e) => setNewQ({ ...newQ, text: e.target.value })}
+                    rows={3}
+                    className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white placeholder-slate-600 text-sm focus:outline-none focus:border-[#6366F1] transition-all resize-none"
+                    style={{ fontFamily: "'Noto Serif Devanagari', 'Noto Sans Devanagari', serif" }}
+                  />
+                </div>
+                {(['option_a', 'option_b', 'option_c', 'option_d'] as const).map((opt) => (
+                  <div key={opt} className="mb-2">
+                    <label className="block text-slate-400 text-xs mb-1 uppercase font-medium">{opt.replace('_', ' ')}</label>
+                    <input
+                      type="text"
+                      value={newQ[opt]}
+                      onChange={(e) => setNewQ({ ...newQ, [opt]: e.target.value })}
+                      className="w-full px-3 py-2 rounded-xl bg-[#0F172A] border border-white/10 text-white text-sm focus:outline-none focus:border-[#6366F1] transition-all"
+                      style={{ fontFamily: "'Noto Serif Devanagari', 'Noto Sans Devanagari', serif" }}
+                    />
+                  </div>
+                ))}
+                <div className="mb-4">
+                  <label className="block text-slate-400 text-xs mb-1.5 font-medium">सत्यम् उत्तरम् (Correct Answer)</label>
+                  <div className="relative">
+                    <select
+                      value={newQ.correct_answer}
+                      onChange={(e) => setNewQ({ ...newQ, correct_answer: e.target.value as 'A' | 'B' | 'C' | 'D' })}
+                      className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white text-sm focus:outline-none focus:border-[#6366F1] appearance-none transition-all"
+                    >
+                      {['A', 'B', 'C', 'D'].map((o) => <option key={o} value={o}>Option {o}</option>)}
+                    </select>
+                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={saveQuestion}
+                    className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 to-violet-500 text-white text-sm font-semibold hover:shadow-lg hover:shadow-indigo-500/30 transition-all"
+                  >
+                    {editQId ? 'Update Question' : 'Add to Question Bank'}
+                  </button>
+                  {editQId && (
+                    <button
+                      onClick={() => { setEditQId(null); setNewQ({ text: '', option_a: '', option_b: '', option_c: '', option_d: '', correct_answer: 'A', sort_order: 0, category_id: '' }); }}
+                      className="px-4 py-2.5 rounded-xl border border-white/10 text-slate-400 text-sm hover:bg-white/5 transition-colors"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+            <div className="lg:col-span-3">
+              {/* Category Filter for Questions */}
+              <div className="mb-4 flex gap-2">
+                <button
+                  onClick={() => setSelectedCategory(null)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${!selectedCategory ? 'bg-[#6366F1] text-white' : 'bg-[#1E293B] text-slate-400 hover:bg-white/5'}`}
+                >
+                  All Questions
+                </button>
+                {testCategories.map((cat) => (
+                  <button
+                    key={cat.id}
+                    onClick={() => setSelectedCategory(cat.id)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1 ${selectedCategory === cat.id ? 'bg-[#6366F1] text-white' : 'bg-[#1E293B] text-slate-400 hover:bg-white/5'}`}
+                  >
+                    {cat.icon} {cat.name}
+                  </button>
+                ))}
+              </div>
+              
+              <div className="bg-[#1E293B]/80 backdrop-blur-sm rounded-2xl border border-white/10 overflow-hidden">
+                <div className="px-5 py-3.5 border-b border-white/10 bg-white/5">
+                  <span className="text-white font-semibold text-sm">📝 Question Bank ({filteredQuestions.length} questions)</span>
+                  {selectedCategory && (
+                    <span className="ml-2 text-xs text-teal-400">
+                      {testCategories.find(c => c.id === selectedCategory)?.name}
+                    </span>
+                  )}
+                </div>
+                <div className="divide-y divide-white/5 max-h-[500px] overflow-y-auto">
+                  {filteredQuestions.map((q, i) => {
+                    const category = testCategories.find(c => c.id === q.category_id);
+                    return (
+                      <div key={q.id} className="px-5 py-4 hover:bg-white/5 transition-colors">
+                        <div className="flex items-start gap-3">
+                          <div className="w-7 h-7 rounded-full bg-gradient-to-r from-indigo-500 to-violet-500 text-white text-xs font-bold flex items-center justify-center flex-shrink-0 mt-0.5 shadow-lg">
+                            {i + 1}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1">
+                              {category && (
+                                <span className="text-xs bg-teal-500/20 text-teal-400 px-2 py-0.5 rounded-full">
+                                  {category.icon} {category.name}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-white text-sm leading-relaxed" style={{ fontFamily: "'Noto Serif Devanagari', 'Noto Sans Devanagari', serif" }}>
+                              {q.text}
+                            </p>
+                            <div className="grid grid-cols-2 gap-2 mt-2">
+                              <div className="text-xs text-slate-400">A: {q.option_a}</div>
+                              <div className="text-xs text-slate-400">B: {q.option_b}</div>
+                              <div className="text-xs text-slate-400">C: {q.option_c}</div>
+                              <div className="text-xs text-slate-400">D: {q.option_d}</div>
+                            </div>
+                            <div className="mt-2">
+                              <span className="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full">✓ Correct: {q.correct_answer}</span>
+                            </div>
+                          </div>
+                          <div className="flex gap-1.5 flex-shrink-0">
+                            <button onClick={() => editQuestion(q)} className="text-slate-500 hover:text-[#6366F1] transition-colors p-1">
+                              <Edit className="w-4 h-4" />
+                            </button>
+                            <button onClick={() => deleteQuestion(q.id)} className="text-slate-500 hover:text-red-400 transition-colors p-1">
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* VIDEOS TAB (Same as before) */}
+        {activeTab === 'videos' && (
+          <div className="grid lg:grid-cols-5 gap-6 animate-fadeIn">
+            <div className="lg:col-span-2">
+              <div className="bg-[#1E293B]/80 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
+                <h3 className="text-white font-semibold mb-4 flex items-center gap-2">
+                  <div className="w-6 h-6 rounded-lg bg-gradient-to-r from-red-500 to-orange-500 flex items-center justify-center">
+                    <Video className="w-3.5 h-3.5 text-white" />
+                  </div>
+                  {editVideoId ? 'Edit Video' : 'Add YouTube Video'}
+                </h3>
+                {(['topic', 'youtube_url', 'description', 'duration'] as const).map((field) => (
+                  <div key={field} className="mb-3">
+                    <label className="block text-slate-400 text-xs mb-1.5 font-medium capitalize">{field.replace('_', ' ')}</label>
+                    <input
+                      type="text"
+                      value={newVideo[field]}
+                      onChange={(e) => setNewVideo({ ...newVideo, [field]: e.target.value })}
+                      placeholder={field === 'youtube_url' ? 'https://www.youtube.com/watch?v=...' : field === 'duration' ? '15 min' : ''}
+                      className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white placeholder-slate-600 text-sm focus:outline-none focus:border-[#6366F1] transition-all"
+                    />
+                  </div>
+                ))}
+                <div className="flex gap-2 mt-4">
+                  <button
+                    onClick={saveVideo}
+                    className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-red-500 to-orange-500 text-white text-sm font-semibold hover:shadow-lg hover:shadow-red-500/30 transition-all"
+                  >
+                    {editVideoId ? 'Update Video' : 'Add to Library'}
+                  </button>
+                  {editVideoId && (
+                    <button
+                      onClick={() => { setEditVideoId(null); setNewVideo({ topic: '', youtube_url: '', description: '', duration: '15 min', thumbnail: '' }); }}
+                      className="px-4 py-2.5 rounded-xl border border-white/10 text-slate-400 text-sm hover:bg-white/5 transition-colors"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+            <div className="lg:col-span-3">
+              <div className="bg-[#1E293B]/80 backdrop-blur-sm rounded-2xl border border-white/10 overflow-hidden">
+                <div className="px-5 py-3.5 border-b border-white/10 bg-white/5">
+                  <span className="text-white font-semibold text-sm">📹 Video Library ({videos.length})</span>
+                </div>
+                <div className="divide-y divide-white/5 max-h-96 overflow-y-auto">
+                  {videos.map((v) => (
+                    <div key={v.id} className="flex items-center gap-3 px-5 py-3.5 hover:bg-white/5 transition-colors">
+                      <div className="flex-1 min-w-0">
+                        <div className="text-white text-sm font-medium truncate">{v.topic}</div>
+                        <div className="text-slate-500 text-xs truncate mt-0.5">{v.youtube_url}</div>
+                      </div>
+                      <span className="text-slate-600 text-xs flex-shrink-0">{v.duration}</span>
+                      <button onClick={() => editVideo(v)} className="text-slate-500 hover:text-[#6366F1] transition-colors p-1">
+                        <Edit className="w-4 h-4" />
+                      </button>
+                      <button onClick={() => deleteVideo(v.id)} className="text-slate-500 hover:text-red-400 transition-colors p-1">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* LIVE CLASSES TAB (Same as before) */}
+        {activeTab === 'live' && (
+          <div className="grid lg:grid-cols-5 gap-6 animate-fadeIn">
+            <div className="lg:col-span-2">
+              <div className="bg-[#1E293B]/80 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
+                <h3 className="text-white font-semibold mb-4 flex items-center gap-2">
+                  <div className="w-6 h-6 rounded-lg bg-gradient-to-r from-green-500 to-emerald-500 flex items-center justify-center">
+                    <Monitor className="w-3.5 h-3.5 text-white" />
+                  </div>
+                  {editLiveId ? 'Edit Live Class' : 'Schedule Live Class'}
+                </h3>
+                <div className="mb-3">
+                  <label className="block text-slate-400 text-xs mb-1.5 font-medium">Class Title</label>
+                  <input
+                    type="text"
+                    value={newLiveClass.title}
+                    onChange={(e) => setNewLiveClass({ ...newLiveClass, title: e.target.value })}
+                    placeholder="e.g., Advanced Sanskrit Grammar"
+                    className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white text-sm focus:outline-none focus:border-[#6366F1] transition-all"
+                  />
+                </div>
+                <div className="mb-3">
+                  <label className="block text-slate-400 text-xs mb-1.5 font-medium">YouTube Stream URL (Live or Premiere)</label>
+                  <input
+                    type="text"
+                    value={newLiveClass.youtube_stream_url}
+                    onChange={(e) => setNewLiveClass({ ...newLiveClass, youtube_stream_url: e.target.value })}
+                    placeholder="https://www.youtube.com/watch?v=..."
+                    className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white text-sm focus:outline-none focus:border-[#6366F1] transition-all"
+                  />
+                </div>
+                <div className="mb-3">
+                  <label className="block text-slate-400 text-xs mb-1.5 font-medium">Scheduled Date & Time</label>
+                  <input
+                    type="datetime-local"
+                    value={newLiveClass.scheduled_at}
+                    onChange={(e) => setNewLiveClass({ ...newLiveClass, scheduled_at: e.target.value })}
+                    className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white text-sm focus:outline-none focus:border-[#6366F1] transition-all"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3 mb-3">
+                  <div>
+                    <label className="block text-slate-400 text-xs mb-1.5 font-medium">Duration (mins)</label>
+                    <input
+                      type="text"
+                      value={newLiveClass.duration}
+                      onChange={(e) => setNewLiveClass({ ...newLiveClass, duration: e.target.value })}
+                      placeholder="60"
+                      className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white text-sm focus:outline-none focus:border-[#6366F1] transition-all"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 text-xs mb-1.5 font-medium">Status</label>
+                    <button
+                      onClick={() => setNewLiveClass({ ...newLiveClass, is_live: !newLiveClass.is_live })}
+                      className={`w-full px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${newLiveClass.is_live ? 'bg-red-500/20 text-red-400 border border-red-500/30' : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'}`}
+                    >
+                      {newLiveClass.is_live ? '🔴 LIVE NOW' : '⚪ Scheduled'}
+                    </button>
+                  </div>
+                </div>
+                <div className="mb-4">
+                  <label className="block text-slate-400 text-xs mb-1.5 font-medium">Description</label>
+                  <textarea
+                    value={newLiveClass.description}
+                    onChange={(e) => setNewLiveClass({ ...newLiveClass, description: e.target.value })}
+                    rows={2}
+                    placeholder="What will students learn?"
+                    className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white text-sm focus:outline-none focus:border-[#6366F1] transition-all resize-none"
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={saveLiveClass}
+                    className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-green-500 to-emerald-500 text-white text-sm font-semibold hover:shadow-lg hover:shadow-green-500/30 transition-all"
+                  >
+                    {editLiveId ? 'Update Class' : 'Schedule Class'}
+                  </button>
+                  {editLiveId && (
+                    <button
+                      onClick={() => { setEditLiveId(null); setNewLiveClass({ title: '', youtube_stream_url: '', scheduled_at: '', duration: '60', description: '', is_live: false }); }}
+                      className="px-4 py-2.5 rounded-xl border border-white/10 text-slate-400 text-sm hover:bg-white/5 transition-colors"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+            <div className="lg:col-span-3">
+              <div className="bg-[#1E293B]/80 backdrop-blur-sm rounded-2xl border border-white/10 overflow-hidden">
+                <div className="px-5 py-3.5 border-b border-white/10 bg-white/5">
+                  <span className="text-white font-semibold text-sm">📺 Live & Upcoming Classes ({liveClasses.length})</span>
+                </div>
+                <div className="divide-y divide-white/5 max-h-[500px] overflow-y-auto">
+                  {liveClasses.map((l) => (
+                    <div key={l.id} className="px-5 py-4 hover:bg-white/5 transition-colors">
+                      <div className="flex items-start gap-3">
+                        <div className={`w-2 h-2 rounded-full mt-2 ${l.is_live ? 'bg-red-500 animate-pulse' : 'bg-emerald-500'}`}></div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <h4 className="text-white font-semibold">{l.title}</h4>
+                            {l.is_live && (
+                              <span className="px-2 py-0.5 rounded-full bg-red-500/20 text-red-400 text-xs font-bold animate-pulse">LIVE</span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-4 mt-1.5">
+                            <span className="text-slate-500 text-xs flex items-center gap-1">
+                              <Calendar className="w-3 h-3" /> {new Date(l.scheduled_at).toLocaleString()}
+                            </span>
+                            <span className="text-slate-500 text-xs flex items-center gap-1">
+                              <Clock className="w-3 h-3" /> {l.duration} min
+                            </span>
+                          </div>
+                          {l.description && (
+                            <p className="text-slate-400 text-xs mt-1.5 line-clamp-1">{l.description}</p>
+                          )}
+                        </div>
+                        <div className="flex gap-1.5">
+                          {!l.is_live && (
+                            <button
+                              onClick={() => toggleLiveStatus(l.id, l.is_live)}
+                              className="px-2 py-1 rounded-lg bg-emerald-500/20 text-emerald-400 text-xs font-medium hover:bg-emerald-500/30 transition-colors"
+                            >
+                              Start Live
+                            </button>
+                          )}
+                          {l.is_live && (
+                            <button
+                              onClick={() => toggleLiveStatus(l.id, l.is_live)}
+                              className="px-2 py-1 rounded-lg bg-red-500/20 text-red-400 text-xs font-medium hover:bg-red-500/30 transition-colors"
+                            >
+                              End Class
+                            </button>
+                          )}
+                          <button onClick={() => editLiveClass(l)} className="text-slate-500 hover:text-[#6366F1] transition-colors p-1">
+                            <Edit className="w-4 h-4" />
+                          </button>
+                          <button onClick={() => deleteLiveClass(l.id)} className="text-slate-500 hover:text-red-400 transition-colors p-1">
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* STUDY MATERIALS TAB (Same as before) */}
+        {activeTab === 'materials' && (
+          <div className="grid lg:grid-cols-5 gap-6 animate-fadeIn">
+            <div className="lg:col-span-2">
+              <div className="bg-[#1E293B]/80 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
+                <h3 className="text-white font-semibold mb-4 flex items-center gap-2">
+                  <div className="w-6 h-6 rounded-lg bg-gradient-to-r from-yellow-500 to-amber-500 flex items-center justify-center">
+                    <Upload className="w-3.5 h-3.5 text-white" />
+                  </div>
+                  {editMaterialId ? 'Edit Material' : 'Upload Study Material'}
+                </h3>
+                <div className="mb-3">
+                  <label className="block text-slate-400 text-xs mb-1.5 font-medium">Title</label>
+                  <input
+                    type="text"
+                    value={newMaterial.title}
+                    onChange={(e) => setNewMaterial({ ...newMaterial, title: e.target.value })}
+                    placeholder="e.g., Sanskrit Grammar PDF"
+                    className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white text-sm focus:outline-none focus:border-[#6366F1] transition-all"
+                  />
+                </div>
+                <div className="mb-3">
+                  <label className="block text-slate-400 text-xs mb-1.5 font-medium">Subject/Category</label>
+                  <input
+                    type="text"
+                    value={newMaterial.subject}
+                    onChange={(e) => setNewMaterial({ ...newMaterial, subject: e.target.value })}
+                    placeholder="e.g., Grammar, Vocabulary, Literature"
+                    className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white text-sm focus:outline-none focus:border-[#6366F1] transition-all"
+                  />
+                </div>
+                <div className="mb-3">
+                  <label className="block text-slate-400 text-xs mb-1.5 font-medium">File URL (Google Drive / Direct Link)</label>
+                  <input
+                    type="text"
+                    value={newMaterial.file_url}
+                    onChange={(e) => setNewMaterial({ ...newMaterial, file_url: e.target.value })}
+                    placeholder="https://drive.google.com/file/d/..."
+                    className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white text-sm focus:outline-none focus:border-[#6366F1] transition-all"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3 mb-3">
+                  <div>
+                    <label className="block text-slate-400 text-xs mb-1.5 font-medium">File Type</label>
+                    <select
+                      value={newMaterial.file_type}
+                      onChange={(e) => setNewMaterial({ ...newMaterial, file_type: e.target.value })}
+                      className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white text-sm focus:outline-none focus:border-[#6366F1] transition-all"
+                    >
+                      <option value="pdf">PDF Document</option>
+                      <option value="doc">Word Document</option>
+                      <option value="ppt">PowerPoint</option>
+                      <option value="video">Video File</option>
+                      <option value="audio">Audio File</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 text-xs mb-1.5 font-medium">File Size</label>
+                    <input
+                      type="text"
+                      value={newMaterial.size}
+                      onChange={(e) => setNewMaterial({ ...newMaterial, size: e.target.value })}
+                      placeholder="2.5 MB"
+                      className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white text-sm focus:outline-none focus:border-[#6366F1] transition-all"
+                    />
+                  </div>
+                </div>
+                <div className="mb-4">
+                  <label className="block text-slate-400 text-xs mb-1.5 font-medium">Description</label>
+                  <textarea
+                    value={newMaterial.description}
+                    onChange={(e) => setNewMaterial({ ...newMaterial, description: e.target.value })}
+                    rows={2}
+                    placeholder="What's inside this material?"
+                    className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white text-sm focus:outline-none focus:border-[#6366F1] transition-all resize-none"
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={saveMaterial}
+                    className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-yellow-500 to-amber-500 text-white text-sm font-semibold hover:shadow-lg hover:shadow-yellow-500/30 transition-all"
+                  >
+                    {editMaterialId ? 'Update Material' : 'Upload Material'}
+                  </button>
+                  {editMaterialId && (
+                    <button
+                      onClick={() => { setEditMaterialId(null); setNewMaterial({ title: '', description: '', file_url: '', file_type: 'pdf', subject: '', size: '2.5 MB' }); }}
+                      className="px-4 py-2.5 rounded-xl border border-white/10 text-slate-400 text-sm hover:bg-white/5 transition-colors"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+                <div className="mt-4 p-3 rounded-xl bg-blue-500/10 border border-blue-500/20">
+                  <p className="text-xs text-blue-400 flex items-center gap-1">
+                    <LinkIcon className="w-3 h-3" />
+                    Tip: Use Google Drive links with "anyone with link can view" permission
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="lg:col-span-3">
+              <div className="flex justify-between items-center mb-4">
+                <div className="flex gap-1 bg-[#1E293B] rounded-lg p-1">
+                  <button
+                    onClick={() => setViewMode('grid')}
+                    className={`p-1.5 rounded-md transition-colors ${viewMode === 'grid' ? 'bg-[#6366F1] text-white' : 'text-slate-500 hover:text-white'}`}
+                  >
+                    <Grid3x3 className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => setViewMode('list')}
+                    className={`p-1.5 rounded-md transition-colors ${viewMode === 'list' ? 'bg-[#6366F1] text-white' : 'text-slate-500 hover:text-white'}`}
+                  >
+                    <List className="w-4 h-4" />
+                  </button>
+                </div>
+                <span className="text-slate-500 text-xs">{materials.length} materials available</span>
+              </div>
+
+              {viewMode === 'grid' ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {materials.map((m) => (
+                    <div key={m.id} className="bg-[#1E293B]/80 backdrop-blur-sm rounded-xl border border-white/10 p-4 hover:scale-[1.02] transition-all duration-300">
+                      <div className="flex items-start gap-3">
+                        <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-yellow-500/20 to-amber-500/20 flex items-center justify-center flex-shrink-0">
+                          <FileText className="w-5 h-5 text-amber-400" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <h4 className="text-white font-semibold text-sm truncate">{m.title}</h4>
+                          <p className="text-slate-500 text-xs mt-0.5">{m.subject || 'General'}</p>
+                          <div className="flex items-center gap-2 mt-2">
+                            <span className="text-slate-600 text-xs">{m.file_type.toUpperCase()}</span>
+                            <span className="text-slate-600 text-xs">• {m.size || 'N/A'}</span>
+                          </div>
+                        </div>
+                        <div className="flex gap-1">
+                          <button onClick={() => editMaterial(m)} className="text-slate-500 hover:text-[#6366F1] transition-colors p-1">
+                            <Edit className="w-4 h-4" />
+                          </button>
+                          <button onClick={() => deleteMaterial(m.id)} className="text-slate-500 hover:text-red-400 transition-colors p-1">
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                      {m.description && (
+                        <p className="text-slate-400 text-xs mt-2 line-clamp-2">{m.description}</p>
+                      )}
+                      <a
+                        href={m.file_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-3 flex items-center justify-center gap-1 w-full py-1.5 rounded-lg bg-[#0F172A] text-slate-400 text-xs hover:text-white transition-colors"
+                      >
+                        <ExternalLink className="w-3 h-3" /> Preview Material
+                      </a>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="bg-[#1E293B]/80 backdrop-blur-sm rounded-2xl border border-white/10 overflow-hidden">
+                  <div className="divide-y divide-white/5">
+                    {materials.map((m) => (
+                      <div key={m.id} className="flex items-center gap-3 px-5 py-3.5 hover:bg-white/5 transition-colors">
+                        <div className="flex-1 min-w-0">
+                          <div className="text-white text-sm font-medium truncate">{m.title}</div>
+                          <div className="text-slate-500 text-xs truncate mt-0.5">{m.subject || 'General'} • {m.file_type.toUpperCase()} • {m.size}</div>
+                        </div>
+                        <a href={m.file_url} target="_blank" rel="noopener noreferrer" className="text-slate-500 hover:text-white transition-colors">
+                          <ExternalLink className="w-4 h-4" />
+                        </a>
+                        <button onClick={() => editMaterial(m)} className="text-slate-500 hover:text-[#6366F1] transition-colors p-1">
+                          <Edit className="w-4 h-4" />
+                        </button>
+                        <button onClick={() => deleteMaterial(m.id)} className="text-slate-500 hover:text-red-400 transition-colors p-1">
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
+
+      <style>{`
+        @keyframes fadeIn {
+          from { opacity: 0; transform: translateY(10px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fadeIn {
+          animation: fadeIn 0.3s ease-out;
+        }
+      `}</style>
     </div>
   );
 }

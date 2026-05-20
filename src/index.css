@@ -1,3 +1,15 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Prevent floating contact bar from overlapping content on small screens */
+@media (max-width: 640px) {
+	body {
+		padding-bottom: 96px;
+	}
+}
+
+/* Minor helper for smooth transform feedback */
+.floating-contact-button {
+	transition: transform .15s ease;
+}

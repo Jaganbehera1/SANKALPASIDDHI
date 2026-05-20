@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import Navbar from './components/Navbar';
 import Toast from './components/Toast';
+import FloatingContactBar from './components/FloatingContactBar';
 import Home from './pages/Home';
 import MockTest from './pages/MockTest';
 import AdminDashboard from './pages/AdminDashboard';
@@ -12,6 +13,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <Toast />
+      <FloatingContactBar />
       <Navbar isAdminLoggedIn={isAdminLoggedIn} onAdminLogout={() => setIsAdminLoggedIn(false)} />
       <Routes>
         <Route path="/" element={<Home />} />
