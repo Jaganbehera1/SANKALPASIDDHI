@@ -6,6 +6,7 @@ import FloatingContactBar from './components/FloatingContactBar';
 import Home from './pages/Home';
 import MockTest from './pages/MockTest';
 import AdminDashboard from './pages/AdminDashboard';
+import StudyMaterials from './pages/StudyMaterials';
 
 export default function App() {
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
@@ -18,6 +19,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/mock-test" element={<MockTest />} />
+        <Route path="/study-materials" element={<StudyMaterials />} />
         <Route
           path="/admin-dashboard"
           element={

@@ -15,6 +15,7 @@ export default function Navbar({ isAdminLoggedIn, onAdminLogout }: NavbarProps) 
   const navLinks = [
     { label: 'Home', to: '/' },
     { label: 'Mock Test', to: '/mock-test' },
+    { label: 'Study Materials', to: '/study-materials' },
   ];
 
   const isActive = (to: string) => location.pathname === to;

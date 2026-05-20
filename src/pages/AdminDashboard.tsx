@@ -6,7 +6,7 @@ import {
   Video, Calendar, Clock, Link as LinkIcon, FileText,
   Upload, Youtube, Monitor, Grid3x3, List, Sparkles,
   GraduationCap, Library, FolderOpen, ExternalLink, FolderPlus,
-  Timer, Layers, Settings, PlayCircle, StopCircle
+  Timer, Layers, Settings, PlayCircle, StopCircle, CheckCircle
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { ref, get, set, push, update, remove } from 'firebase/database';
@@ -37,6 +37,15 @@ interface UniqueCode {
   created_at: string;
 }
 
+interface MaterialAccessCode {
+  id: string;
+  code: string;
+  used: boolean;
+  created_at: string;
+  used_at?: string;
+  student_name?: string;
+}
+
 interface VideoType {
   id: string;
   topic: string;
@@ -63,7 +72,7 @@ interface TestCategory {
   id: string;
   name: string;
   description: string;
-  time_limit: number; // in minutes
+  time_limit: number;
   total_questions: number;
   is_active: boolean;
   created_at: string;
@@ -109,6 +118,7 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
   // Data
   const [results, setResults] = useState<TestResult[]>([]);
   const [codes, setCodes] = useState<UniqueCode[]>([]);
+  const [materialCodes, setMaterialCodes] = useState<MaterialAccessCode[]>([]);
   const [videos, setVideos] = useState<VideoType[]>([]);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [materials, setMaterials] = useState<StudyMaterial[]>([]);
@@ -164,6 +174,25 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
     }
   }, [isLoggedIn]);
 
+  async function fetchMaterialCodes() {
+    try {
+      const codesRef = ref(db, 'material_access_codes');
+      const snapshot = await get(codesRef);
+      if (snapshot.exists()) {
+        const codesData = snapshot.val();
+        const codesList = Object.entries(codesData).map(([id, data]: [string, any]) => ({
+          id,
+          ...data
+        })).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+        setMaterialCodes(codesList);
+      } else {
+        setMaterialCodes([]);
+      }
+    } catch (error) {
+      console.error('Error fetching material codes:', error);
+    }
+  }
+
   async function fetchAllData() {
     setLoading(true);
     try {
@@ -194,6 +223,9 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
       } else {
         setCodes([]);
       }
+
+      // Fetch material access codes
+      await fetchMaterialCodes();
 
       // Fetch videos
       const videosRef = ref(db, 'videos');
@@ -305,7 +337,7 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
     toast.success('CSV downloaded!');
   }
 
-  // Generate unique code
+  // Generate unique code for tests
   function generateCode() {
     if (!newStudentName.trim()) {
       toast.error('Enter student name first.');
@@ -346,6 +378,41 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
       fetchAllData();
     } catch (error) {
       toast.error('Failed to save code');
+    }
+  }
+
+  // Generate material access code for study materials
+  async function generateMaterialCode() {
+    const suffix = Math.random().toString(36).substring(2, 8).toUpperCase();
+    const newCode = `STUDY_${suffix}`;
+
+    try {
+      const codesRef = ref(db, 'material_access_codes');
+      await push(codesRef, {
+        code: newCode,
+        used: false,
+        created_at: new Date().toISOString()
+      });
+
+      toast.success(`Material code generated: ${newCode}`);
+      
+      // Refresh the material codes list
+      await fetchMaterialCodes();
+      
+      // Copy to clipboard automatically
+      navigator.clipboard.writeText(newCode);
+      toast.success(`Code copied to clipboard: ${newCode}`);
+    } catch (error) {
+      toast.error('Failed to generate code');
+    }
+  }
+
+  async function deleteMaterialCode(id: string) {
+    if (confirm('Delete this material access code?')) {
+      const codeRef = ref(db, `material_access_codes/${id}`);
+      await remove(codeRef);
+      toast.success('Code deleted');
+      await fetchMaterialCodes();
     }
   }
 
@@ -434,7 +501,6 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
   }
 
   async function deleteCategory(id: string) {
-    // Check if there are questions in this category
     const questionsInCategory = questions.filter(q => q.category_id === id);
     if (questionsInCategory.length > 0) {
       toast.error(`Cannot delete category with ${questionsInCategory.length} questions. Move or delete questions first.`);
@@ -493,7 +559,6 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
           sort_order: maxOrder
         });
         
-        // Update category total questions count
         const categoryRef = ref(db, `test_categories/${newQ.category_id}`);
         const categorySnapshot = await get(categoryRef);
         if (categorySnapshot.exists()) {
@@ -812,7 +877,7 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
                 <Download className="w-4 h-4" /> Export CSV
               </button>
             </div>
-
+        
             <div className="bg-[#1E293B]/80 backdrop-blur-sm rounded-2xl border border-white/10 overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -855,70 +920,164 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
           </div>
         )}
 
-        {/* CODES TAB */}
+        {/* CODES TAB - Updated with Material Codes Display */}
         {activeTab === 'codes' && (
-          <div className="grid lg:grid-cols-5 gap-6 animate-fadeIn">
-            <div className="lg:col-span-2">
-              <div className="bg-[#1E293B]/80 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
-                <h3 className="text-white font-semibold mb-4 flex items-center gap-2">
-                  <div className="w-6 h-6 rounded-lg bg-gradient-to-r from-[#6366F1] to-[#8B5CF6] flex items-center justify-center">
-                    <Plus className="w-3.5 h-3.5 text-white" />
-                  </div>
-                  Generate New Code
-                </h3>
-                <label className="block text-slate-400 text-xs mb-1.5 font-medium">Student Name</label>
-                <input
-                  type="text"
-                  value={newStudentName}
-                  onChange={(e) => setNewStudentName(e.target.value)}
-                  placeholder="e.g., Rahul Verma"
-                  className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white placeholder-slate-600 text-sm focus:outline-none focus:border-[#6366F1] transition-all mb-3"
-                />
-                <button
-                  onClick={generateCode}
-                  className="w-full py-2.5 rounded-xl border border-[#6366F1]/50 text-[#6366F1] text-sm font-medium hover:bg-[#6366F1]/10 transition-all mb-3"
-                >
-                  Generate Unique Code
-                </button>
-                {generatedCode && (
-                  <div className="flex items-center gap-2 p-3 bg-gradient-to-r from-[#6366F1]/10 to-[#8B5CF6]/10 rounded-xl border border-[#6366F1]/20 mb-3">
-                    <span className="font-mono text-emerald-400 text-sm flex-1 tracking-wider font-bold">{generatedCode}</span>
-                    <button onClick={() => copyCode(generatedCode)} className="text-slate-400 hover:text-white transition-colors p-1">
-                      {copiedCode === generatedCode ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
-                    </button>
-                  </div>
-                )}
-                {generatedCode && (
+          <div className="space-y-6 animate-fadeIn">
+            {/* TEST ACCESS CODES SECTION */}
+            <div className="grid lg:grid-cols-5 gap-6">
+              <div className="lg:col-span-2">
+                <div className="bg-[#1E293B]/80 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
+                  <h3 className="text-white font-semibold mb-4 flex items-center gap-2">
+                    <div className="w-6 h-6 rounded-lg bg-gradient-to-r from-[#6366F1] to-[#8B5CF6] flex items-center justify-center">
+                      <Plus className="w-3.5 h-3.5 text-white" />
+                    </div>
+                    Test Access Codes
+                  </h3>
+                  <label className="block text-slate-400 text-xs mb-1.5 font-medium">Student Name</label>
+                  <input
+                    type="text"
+                    value={newStudentName}
+                    onChange={(e) => setNewStudentName(e.target.value)}
+                    placeholder="e.g., Rahul Verma"
+                    className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white placeholder-slate-600 text-sm focus:outline-none focus:border-[#6366F1] transition-all mb-3"
+                  />
                   <button
-                    onClick={saveCode}
-                    className="w-full py-2.5 rounded-xl bg-gradient-to-r from-[#6366F1] to-[#8B5CF6] text-white text-sm font-semibold hover:shadow-lg hover:shadow-indigo-500/30 transition-all"
+                    onClick={generateCode}
+                    className="w-full py-2.5 rounded-xl border border-[#6366F1]/50 text-[#6366F1] text-sm font-medium hover:bg-[#6366F1]/10 transition-all mb-3"
                   >
-                    Save & Issue Code
+                    Generate Unique Code
                   </button>
-                )}
+                  {generatedCode && (
+                    <div className="flex items-center gap-2 p-3 bg-gradient-to-r from-[#6366F1]/10 to-[#8B5CF6]/10 rounded-xl border border-[#6366F1]/20 mb-3">
+                      <span className="font-mono text-emerald-400 text-sm flex-1 tracking-wider font-bold">{generatedCode}</span>
+                      <button onClick={() => copyCode(generatedCode)} className="text-slate-400 hover:text-white transition-colors p-1">
+                        {copiedCode === generatedCode ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  )}
+                  {generatedCode && (
+                    <button
+                      onClick={saveCode}
+                      className="w-full py-2.5 rounded-xl bg-gradient-to-r from-[#6366F1] to-[#8B5CF6] text-white text-sm font-semibold hover:shadow-lg hover:shadow-indigo-500/30 transition-all"
+                    >
+                      Save & Issue Code
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="lg:col-span-3">
+                <div className="bg-[#1E293B]/80 backdrop-blur-sm rounded-2xl border border-white/10 overflow-hidden">
+                  <div className="px-5 py-3.5 border-b border-white/10 bg-white/5">
+                    <span className="text-white font-semibold text-sm">📋 Issued Test Codes ({codes.length})</span>
+                  </div>
+                  <div className="divide-y divide-white/5 max-h-96 overflow-y-auto">
+                    {codes.map((c) => (
+                      <div key={c.id} className="flex items-center gap-3 px-5 py-3 hover:bg-white/5 transition-colors">
+                        <div className="flex-1 min-w-0">
+                          <div className="text-white text-sm font-medium">{c.student_name}</div>
+                          <div className="text-slate-500 font-mono text-xs mt-0.5">{c.code}</div>
+                        </div>
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-semibold flex-shrink-0 ${c.used ? 'bg-slate-700 text-slate-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
+                          {c.used ? 'Used' : 'Available'}
+                        </span>
+                        <button onClick={() => copyCode(c.code)} className="text-slate-500 hover:text-white transition-colors p-1">
+                          {copiedCode === c.code ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
 
-            <div className="lg:col-span-3">
-              <div className="bg-[#1E293B]/80 backdrop-blur-sm rounded-2xl border border-white/10 overflow-hidden">
-                <div className="px-5 py-3.5 border-b border-white/10 bg-white/5">
-                  <span className="text-white font-semibold text-sm">📋 Issued Codes ({codes.length})</span>
-                </div>
-                <div className="divide-y divide-white/5 max-h-96 overflow-y-auto">
-                  {codes.map((c) => (
-                    <div key={c.id} className="flex items-center gap-3 px-5 py-3 hover:bg-white/5 transition-colors">
-                      <div className="flex-1 min-w-0">
-                        <div className="text-white text-sm font-medium">{c.student_name}</div>
-                        <div className="text-slate-500 font-mono text-xs mt-0.5">{c.code}</div>
-                      </div>
-                      <span className={`px-2 py-0.5 rounded-full text-xs font-semibold flex-shrink-0 ${c.used ? 'bg-slate-700 text-slate-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
-                        {c.used ? 'Used' : 'Available'}
-                      </span>
-                      <button onClick={() => copyCode(c.code)} className="text-slate-500 hover:text-white transition-colors p-1">
-                        {copiedCode === c.code ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
-                      </button>
+            {/* STUDY MATERIAL ACCESS CODES SECTION - WITH FULL LIST DISPLAY */}
+            <div className="grid lg:grid-cols-5 gap-6">
+              <div className="lg:col-span-2">
+                <div className="bg-[#1E293B]/80 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
+                  <h3 className="text-white font-semibold mb-4 flex items-center gap-2">
+                    <div className="w-6 h-6 rounded-lg bg-gradient-to-r from-teal-500 to-emerald-500 flex items-center justify-center">
+                      <BookOpen className="w-3.5 h-3.5 text-white" />
                     </div>
-                  ))}
+                    Study Material Codes
+                  </h3>
+                  <p className="text-slate-400 text-xs mb-4">Generate single-use access codes for study materials. Each code can only be used once.</p>
+                  <button
+                    onClick={generateMaterialCode}
+                    className="w-full py-2.5 rounded-xl bg-gradient-to-r from-teal-500 to-emerald-500 text-white text-sm font-semibold hover:shadow-lg hover:shadow-teal-500/30 transition-all"
+                  >
+                    + Generate Material Code
+                  </button>
+                  <div className="mt-4 p-3 rounded-xl bg-teal-500/10 border border-teal-500/20">
+                    <p className="text-xs text-teal-400 flex items-center gap-1">
+                      <CheckCircle className="w-3 h-3" />
+                      Codes are single-use and tracked automatically
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="lg:col-span-3">
+                <div className="bg-[#1E293B]/80 backdrop-blur-sm rounded-2xl border border-white/10 overflow-hidden">
+                  <div className="px-5 py-3.5 border-b border-white/10 bg-white/5">
+                    <span className="text-white font-semibold text-sm">🔑 Material Access Codes ({materialCodes.length})</span>
+                  </div>
+                  <div className="divide-y divide-white/5 max-h-96 overflow-y-auto">
+                    {materialCodes.length === 0 ? (
+                      <div className="px-5 py-8 text-center text-slate-500 text-sm">
+                        No material codes generated yet. Click the button to create one.
+                      </div>
+                    ) : (
+                      materialCodes.map((code) => (
+                        <div key={code.id} className="flex items-center gap-3 px-5 py-3 hover:bg-white/5 transition-colors">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono text-teal-400 text-sm font-bold tracking-wider">
+                                {code.code}
+                              </span>
+                              {code.used && (
+                                <span className="px-2 py-0.5 rounded-full bg-red-500/20 text-red-400 text-xs font-medium">
+                                  Used
+                                </span>
+                              )}
+                              {!code.used && (
+                                <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 text-xs font-medium">
+                                  Active
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-slate-500 text-xs mt-1">
+                              Created: {new Date(code.created_at).toLocaleString()}
+                              {code.used_at && (
+                                <> • Used: {new Date(code.used_at).toLocaleString()}</>
+                              )}
+                              {code.student_name && (
+                                <> • By: {code.student_name}</>
+                              )}
+                            </div>
+                          </div>
+                          <div className="flex gap-1.5">
+                            <button
+                              onClick={() => copyCode(code.code)}
+                              className="p-1.5 rounded-lg text-slate-500 hover:text-teal-400 hover:bg-teal-500/10 transition-colors"
+                              title="Copy code"
+                            >
+                              <Copy className="w-4 h-4" />
+                            </button>
+                            {!code.used && (
+                              <button
+                                onClick={() => deleteMaterialCode(code.id)}
+                                className="p-1.5 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                                title="Delete code"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
@@ -1078,7 +1237,7 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
           </div>
         )}
 
-        {/* QUESTIONS TAB with Category Filter */}
+        {/* QUESTIONS TAB */}
         {activeTab === 'questions' && (
           <div className="grid lg:grid-cols-5 gap-6 animate-fadeIn">
             <div className="lg:col-span-2">
@@ -1090,7 +1249,6 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
                   {editQId ? 'Edit Question' : 'Add Sanskrit Question'}
                 </h3>
                 
-                {/* Category Selector */}
                 <div className="mb-3">
                   <label className="block text-slate-400 text-xs mb-1.5 font-medium flex items-center gap-1">
                     <FolderOpen className="w-3 h-3" /> Test Folder
@@ -1163,7 +1321,6 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
               </div>
             </div>
             <div className="lg:col-span-3">
-              {/* Category Filter for Questions */}
               <div className="mb-4 flex gap-2">
                 <button
                   onClick={() => setSelectedCategory(null)}
@@ -1239,7 +1396,7 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
           </div>
         )}
 
-        {/* VIDEOS TAB (Same as before) */}
+        {/* VIDEOS TAB */}
         {activeTab === 'videos' && (
           <div className="grid lg:grid-cols-5 gap-6 animate-fadeIn">
             <div className="lg:col-span-2">
@@ -1307,7 +1464,7 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
           </div>
         )}
 
-        {/* LIVE CLASSES TAB (Same as before) */}
+        {/* LIVE CLASSES TAB */}
         {activeTab === 'live' && (
           <div className="grid lg:grid-cols-5 gap-6 animate-fadeIn">
             <div className="lg:col-span-2">
@@ -1458,7 +1615,7 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
           </div>
         )}
 
-        {/* STUDY MATERIALS TAB (Same as before) */}
+        {/* STUDY MATERIALS TAB */}
         {activeTab === 'materials' && (
           <div className="grid lg:grid-cols-5 gap-6 animate-fadeIn">
             <div className="lg:col-span-2">
