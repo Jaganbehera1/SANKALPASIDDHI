@@ -4,7 +4,8 @@ import {
   RotateCcw, Trophy, AlertCircle, Shield, Star, Sparkles,
   Zap, Target, BookOpen, Award, TrendingUp, BarChart3,
   Flag, HelpCircle, ThumbsUp, Send, Loader2, Key,
-  FolderOpen, Timer, Layers, GraduationCap, FileQuestion
+  FolderOpen, Timer, Layers, GraduationCap, FileQuestion,
+  User, Mail, Phone
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import confetti from 'canvas-confetti';
@@ -48,6 +49,8 @@ export default function MockTest() {
   const [markedForReview, setMarkedForReview] = useState<string[]>([]);
   const [isAutoAdvancing, setIsAutoAdvancing] = useState(false);
   const [loadingCategories, setLoadingCategories] = useState(true);
+  const [verifyingCode, setVerifyingCode] = useState(false);
+  const [showStudentInfo, setShowStudentInfo] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -125,6 +128,13 @@ export default function MockTest() {
   async function handleCodeSubmit(e: React.FormEvent) {
     e.preventDefault();
     const code = codeInput.trim().toUpperCase();
+    
+    if (!code) {
+      toast.error('Please enter your access code');
+      return;
+    }
+
+    setVerifyingCode(true);
 
     try {
       const codesRef = ref(db, 'unique_codes');
@@ -143,19 +153,31 @@ export default function MockTest() {
 
       if (!foundCode) {
         toast.error('Invalid code. Please check and try again.');
+        setVerifyingCode(false);
         return;
       }
       
-      if (foundCode.used) {
-        toast.error('This code has already been used.');
+      // Check if code is active
+      if (foundCode.is_active === false) {
+        toast.error('This code has been deactivated. Please contact your instructor.');
+        setVerifyingCode(false);
         return;
       }
 
       setValidCode(foundCode);
       setStage('category-select');
       toast.success(`✨ Access granted! Welcome, ${foundCode.student_name}`);
+      
+      setTimeout(() => {
+        toast.success(`📋 ${foundCode.student_name}`, {
+          duration: 3000,
+          icon: '👤'
+        });
+      }, 500);
     } catch (error) {
       toast.error('Failed to verify code');
+    } finally {
+      setVerifyingCode(false);
     }
   }
 
@@ -214,7 +236,7 @@ export default function MockTest() {
         ? prev.filter(id => id !== questionId)
         : [...prev, questionId]
     );
-    toast.success(prev.includes(questionId) ? 'Removed from review' : 'Marked for review', 
+    toast.success(prev => prev.includes(questionId) ? 'Removed from review' : 'Marked for review', 
       { icon: '🏷️', duration: 1500 }
     );
   }
@@ -239,13 +261,8 @@ export default function MockTest() {
     }
 
     try {
-      const codeRef = ref(db, `unique_codes/${validCode.id}`);
-      await update(codeRef, { 
-        used: true, 
-        used_on: new Date().toISOString(), 
-        test_score: correct 
-      });
-
+      // Don't mark code as used - allow multiple attempts
+      // Just save the result
       const resultsRef = ref(db, 'test_results');
       await push(resultsRef, {
         student_name: validCode.student_name,
@@ -257,7 +274,8 @@ export default function MockTest() {
         category_id: selectedCategory.id,
         category_name: selectedCategory.name,
         time_limit: selectedCategory.time_limit,
-        passing_score: selectedCategory.passing_score
+        passing_score: selectedCategory.passing_score,
+        attempt: new Date().toISOString()
       });
 
       setStage('completed');
@@ -339,18 +357,22 @@ export default function MockTest() {
               type="text"
               value={codeInput}
               onChange={(e) => setCodeInput(e.target.value)}
-              placeholder="e.g., SANKALPA001"
+              placeholder="e.g., SKP_ABCD_EFGH"
               className="w-full px-4 py-3 rounded-xl bg-[#0F172A] border border-white/10 text-white placeholder-slate-600 text-sm focus:outline-none focus:border-[#6366F1] focus:ring-2 focus:ring-[#6366F1]/20 transition-all font-mono tracking-wider uppercase"
               autoComplete="off"
               spellCheck={false}
             />
             <button
               type="submit"
-              disabled={!codeInput.trim()}
+              disabled={!codeInput.trim() || verifyingCode}
               className="mt-5 w-full py-3 rounded-xl bg-gradient-to-r from-[#6366F1] to-[#8B5CF6] text-white font-semibold text-sm disabled:opacity-40 disabled:cursor-not-allowed hover:shadow-xl hover:shadow-indigo-500/30 hover:scale-[1.02] transition-all duration-300 flex items-center justify-center gap-2"
             >
-              <Shield className="w-4 h-4" />
-              Verify & Continue
+              {verifyingCode ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Shield className="w-4 h-4" />
+              )}
+              {verifyingCode ? 'Verifying...' : 'Verify & Continue'}
             </button>
           </form>
 
@@ -376,8 +398,14 @@ export default function MockTest() {
             </div>
             <h1 className="text-3xl font-bold text-white mb-2">Select Test Folder</h1>
             <p className="text-slate-400">
-              Welcome, {validCode?.student_name}! Choose which test you want to take.
+              Welcome, <span className="text-teal-400 font-semibold">{validCode?.student_name}</span>! Choose which test you want to take.
             </p>
+            {validCode?.student_email && (
+              <p className="text-slate-500 text-sm mt-1 flex items-center justify-center gap-1">
+                <Mail className="w-3 h-3" />
+                {validCode.student_email}
+              </p>
+            )}
           </div>
 
           {loadingCategories ? (
@@ -472,19 +500,23 @@ export default function MockTest() {
               <ul className="space-y-2 text-xs">
                 <li className="flex items-center gap-2 text-slate-400">
                   <Sparkles className="w-3 h-3 text-[#6366F1]" />
-                  Test Folder: {selectedCategory.name}
+                  Student: <span className="text-white">{validCode.student_name}</span>
                 </li>
                 <li className="flex items-center gap-2 text-slate-400">
                   <Sparkles className="w-3 h-3 text-[#6366F1]" />
-                  Total questions: {totalQuestions}
+                  Test Folder: <span className="text-white">{selectedCategory.name}</span>
                 </li>
                 <li className="flex items-center gap-2 text-slate-400">
                   <Sparkles className="w-3 h-3 text-[#6366F1]" />
-                  Time limit: {selectedCategory.time_limit} minutes
+                  Total questions: <span className="text-white">{totalQuestions}</span>
                 </li>
                 <li className="flex items-center gap-2 text-slate-400">
                   <Sparkles className="w-3 h-3 text-[#6366F1]" />
-                  Passing score: {passingScore}%
+                  Time limit: <span className="text-white">{selectedCategory.time_limit} minutes</span>
+                </li>
+                <li className="flex items-center gap-2 text-slate-400">
+                  <Sparkles className="w-3 h-3 text-[#6366F1]" />
+                  Passing score: <span className="text-white">{passingScore}%</span>
                 </li>
                 <li className="flex items-center gap-2 text-slate-400">
                   <Sparkles className="w-3 h-3 text-[#6366F1]" />
@@ -496,7 +528,7 @@ export default function MockTest() {
             <div className="flex items-start gap-2 bg-amber-500/10 border border-amber-500/20 rounded-xl p-3 mb-6">
               <AlertCircle className="w-4 h-4 text-amber-400 mt-0.5 flex-shrink-0" />
               <p className="text-amber-300/80 text-xs leading-relaxed">
-                ⚠️ This code can only be used once. Once you start, the {selectedCategory.time_limit}-minute timer begins immediately.
+                ⚠️ Once you start, the {selectedCategory.time_limit}-minute timer begins immediately.
               </p>
             </div>
 
@@ -685,7 +717,7 @@ export default function MockTest() {
     );
   }
 
-  // COMPLETED STAGE
+  // COMPLETED STAGE - FIXED SVG
   if (stage === 'completed' && validCode && selectedCategory) {
     const pct = Math.round((score / questions.length) * 100);
     const passingScore = selectedCategory.passing_score || 60;
@@ -713,36 +745,32 @@ export default function MockTest() {
                   </span>
                 </div>
 
-                {/* Score Circle */}
+                {/* Score Circle - FIXED: No defs, no linearGradient, no stop */}
                 <div className="relative w-32 h-32 mx-auto mb-6">
-                  <svg className="w-full h-full transform -rotate-90">
+                  <svg className="w-full h-full transform -rotate-90" viewBox="0 0 120 120">
+                    {/* Background circle */}
                     <circle
-                      cx="64"
-                      cy="64"
-                      r="58"
-                      stroke="currentColor"
-                      strokeWidth="6"
+                      cx="60"
+                      cy="60"
+                      r="54"
                       fill="none"
-                      className="text-slate-700"
+                      stroke="#1E293B"
+                      strokeWidth="8"
                     />
+                    {/* Progress circle - using single color */}
                     <circle
-                      cx="64"
-                      cy="64"
-                      r="58"
-                      stroke="url(#scoreGradient)"
-                      strokeWidth="6"
+                      cx="60"
+                      cy="60"
+                      r="54"
                       fill="none"
-                      strokeDasharray={`${pct * 3.64} 364`}
+                      stroke="#6366F1"
+                      strokeWidth="8"
+                      strokeDasharray={`${pct * 3.39} 339.3`}
                       strokeLinecap="round"
                       className="transition-all duration-1000"
+                      strokeDashoffset="0"
                     />
                   </svg>
-                  <defs>
-                    <linearGradient id="scoreGradient" x1="0%" y1="0%" x2="100%" y2="0%">
-                      <stop offset="0%" stopColor="#6366F1" />
-                      <stop offset="100%" stopColor="#8B5CF6" />
-                    </linearGradient>
-                  </defs>
                   <div className="absolute inset-0 flex flex-col items-center justify-center">
                     <div className="text-3xl font-bold text-white">{pct}%</div>
                     <div className="text-xs text-slate-500">Score</div>

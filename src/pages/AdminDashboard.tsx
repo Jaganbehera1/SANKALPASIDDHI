@@ -6,7 +6,8 @@ import {
   Video, Calendar, Clock, Link as LinkIcon, FileText,
   Upload, Youtube, Monitor, Grid3x3, List, Sparkles,
   GraduationCap, Library, FolderOpen, ExternalLink, FolderPlus,
-  Timer, Layers, Settings, PlayCircle, StopCircle, CheckCircle
+  Timer, Layers, Settings, PlayCircle, StopCircle, CheckCircle,
+  UserPlus, Key, Shield, RefreshCw, Send
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { ref, get, set, push, update, remove } from 'firebase/database';
@@ -35,6 +36,7 @@ interface UniqueCode {
   used: boolean;
   test_score?: number;
   created_at: string;
+  is_active: boolean;
 }
 
 interface MaterialAccessCode {
@@ -129,9 +131,13 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
   // Search
   const [search, setSearch] = useState('');
 
-  // New Code form
+  // New Code form - ENHANCED
   const [newStudentName, setNewStudentName] = useState('');
+  const [newStudentEmail, setNewStudentEmail] = useState('');
+  const [newStudentPhone, setNewStudentPhone] = useState('');
   const [generatedCode, setGeneratedCode] = useState('');
+  const [selectedCodeType, setSelectedCodeType] = useState<'test' | 'material'>('test');
+  const [showCodeDetails, setShowCodeDetails] = useState<string | null>(null);
 
   // New Video form
   const [newVideo, setNewVideo] = useState({ topic: '', youtube_url: '', description: '', duration: '15 min', thumbnail: '' });
@@ -210,14 +216,15 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
         setResults([]);
       }
 
-      // Fetch unique codes
+      // Fetch unique codes - ENHANCED with active status
       const codesRef = ref(db, 'unique_codes');
       const codesSnapshot = await get(codesRef);
       if (codesSnapshot.exists()) {
         const codesData = codesSnapshot.val();
         const codesList = Object.entries(codesData).map(([id, data]: [string, any]) => ({
           id,
-          ...data
+          ...data,
+          is_active: data.is_active !== false // default to true if not set
         })).sort((a, b) => a.student_name.localeCompare(b.student_name));
         setCodes(codesList);
       } else {
@@ -322,6 +329,7 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
   const totalMaterials = materials.length;
   const activeLiveClasses = liveClasses.filter(l => l.is_live || new Date(l.scheduled_at) > new Date()).length;
   const totalCategories = testCategories.length;
+  const activeTestCodes = codes.filter(c => c.is_active !== false).length;
 
   // CSV export
   function exportCSV() {
@@ -337,43 +345,89 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
     toast.success('CSV downloaded!');
   }
 
-  // Generate unique code for tests
+  // ENHANCED: Generate unique code for tests with validation
   function generateCode() {
     if (!newStudentName.trim()) {
       toast.error('Enter student name first.');
       return;
     }
-    const suffix = Math.random().toString(36).substring(2, 6).toUpperCase();
-    setGeneratedCode(`SANKALPA_${suffix}`);
+
+    // Check if student already has a code
+    const existingCode = codes.find(c => c.student_name.toLowerCase() === newStudentName.trim().toLowerCase() && c.is_active !== false);
+    if (existingCode) {
+      toast.error(`${newStudentName} already has a code: ${existingCode.code}`);
+      setGeneratedCode(existingCode.code);
+      return;
+    }
+
+    // Generate a more readable code format
+    const prefix = 'SKP';
+    const random = Math.random().toString(36).substring(2, 6).toUpperCase();
+    const suffix = Math.random().toString(36).substring(2, 4).toUpperCase();
+    const newCode = `${prefix}_${random}_${suffix}`;
+    setGeneratedCode(newCode);
+    toast.success('✨ New code generated!');
   }
 
+  // ENHANCED: Save code with more user details
   async function saveCode() {
-    if (!generatedCode || !newStudentName.trim()) return;
+    if (!generatedCode || !newStudentName.trim()) {
+      toast.error('Generate a code first.');
+      return;
+    }
 
     try {
       const codesRef = ref(db, 'unique_codes');
       const snapshot = await get(codesRef);
       let codeExists = false;
+      let existingCodeData = null;
+      
       if (snapshot.exists()) {
         const codesData = snapshot.val();
-        codeExists = Object.values(codesData).some((c: any) => c.code === generatedCode);
+        const found = Object.entries(codesData).find(([_, data]: [string, any]) => data.code === generatedCode);
+        if (found) {
+          codeExists = true;
+          existingCodeData = found[1];
+        }
       }
 
-      if (codeExists) {
-        toast.error('Code already exists, regenerate.');
+      if (codeExists && existingCodeData?.student_name !== newStudentName.trim()) {
+        toast.error('Code already assigned to another student.');
         return;
+      }
+
+      // Check if student already has an active code
+      const existingStudentCode = codes.find(c => 
+        c.student_name.toLowerCase() === newStudentName.trim().toLowerCase() && 
+        c.is_active !== false
+      );
+
+      if (existingStudentCode && existingStudentCode.code !== generatedCode) {
+        // Deactivate old code
+        const oldCodeRef = ref(db, `unique_codes/${existingStudentCode.id}`);
+        await update(oldCodeRef, { is_active: false });
       }
 
       const newCodeRef = push(ref(db, 'unique_codes'));
       await set(newCodeRef, {
         code: generatedCode,
         student_name: newStudentName.trim(),
+        student_email: newStudentEmail.trim() || '',
+        student_phone: newStudentPhone.trim() || '',
         used: false,
+        is_active: true,
         created_at: new Date().toISOString()
       });
 
-      toast.success(`✨ Code saved for ${newStudentName}`);
+      toast.success(`✅ Code saved for ${newStudentName}`);
+      
+      // Copy to clipboard
+      navigator.clipboard.writeText(generatedCode);
+      toast.success(`📋 Code copied to clipboard!`);
+      
       setNewStudentName('');
+      setNewStudentEmail('');
+      setNewStudentPhone('');
       setGeneratedCode('');
       fetchAllData();
     } catch (error) {
@@ -381,10 +435,12 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
     }
   }
 
-  // Generate material access code for study materials
+  // Generate material access code
   async function generateMaterialCode() {
-    const suffix = Math.random().toString(36).substring(2, 8).toUpperCase();
-    const newCode = `STUDY_${suffix}`;
+    const prefix = 'MAT';
+    const random = Math.random().toString(36).substring(2, 6).toUpperCase();
+    const suffix = Math.random().toString(36).substring(2, 4).toUpperCase();
+    const newCode = `${prefix}_${random}_${suffix}`;
 
     try {
       const codesRef = ref(db, 'material_access_codes');
@@ -396,12 +452,10 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
 
       toast.success(`Material code generated: ${newCode}`);
       
-      // Refresh the material codes list
       await fetchMaterialCodes();
       
-      // Copy to clipboard automatically
       navigator.clipboard.writeText(newCode);
-      toast.success(`Code copied to clipboard: ${newCode}`);
+      toast.success(`📋 Code copied to clipboard!`);
     } catch (error) {
       toast.error('Failed to generate code');
     }
@@ -416,10 +470,28 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
     }
   }
 
+  // ENHANCED: Toggle code status
+  async function toggleCodeStatus(id: string, currentStatus: boolean) {
+    const codeRef = ref(db, `unique_codes/${id}`);
+    await update(codeRef, { is_active: !currentStatus });
+    toast.success(!currentStatus ? 'Code activated!' : 'Code deactivated.');
+    fetchAllData();
+  }
+
+  // ENHANCED: Delete code with confirmation
+  async function deleteCode(id: string, studentName: string) {
+    if (confirm(`Delete code for ${studentName}? This action cannot be undone.`)) {
+      const codeRef = ref(db, `unique_codes/${id}`);
+      await remove(codeRef);
+      toast.success('Code deleted.');
+      fetchAllData();
+    }
+  }
+
   function copyCode(code: string) {
     navigator.clipboard.writeText(code);
     setCopiedCode(code);
-    toast.success('Code copied to clipboard!');
+    toast.success('📋 Code copied to clipboard!');
     setTimeout(() => setCopiedCode(null), 2000);
   }
 
@@ -807,9 +879,9 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
                 <GraduationCap className="w-3 h-3 inline mr-1" />
                 {totalStudents} Students
               </div>
-              <div className="px-3 py-1.5 rounded-full bg-teal-500/10 border border-teal-500/20 text-teal-400 text-xs font-medium">
-                <FolderOpen className="w-3 h-3 inline mr-1" />
-                {totalCategories} Test Folders
+              <div className="px-3 py-1.5 rounded-full bg-purple-500/10 border border-purple-500/20 text-purple-400 text-xs font-medium">
+                <Key className="w-3 h-3 inline mr-1" />
+                {activeTestCodes} Active Codes
               </div>
             </div>
           </div>
@@ -920,78 +992,179 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
           </div>
         )}
 
-        {/* CODES TAB - Updated with Material Codes Display */}
+        {/* CODES TAB - ENHANCED with permanent code assignment */}
         {activeTab === 'codes' && (
           <div className="space-y-6 animate-fadeIn">
             {/* TEST ACCESS CODES SECTION */}
             <div className="grid lg:grid-cols-5 gap-6">
               <div className="lg:col-span-2">
                 <div className="bg-[#1E293B]/80 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
-                  <h3 className="text-white font-semibold mb-4 flex items-center gap-2">
-                    <div className="w-6 h-6 rounded-lg bg-gradient-to-r from-[#6366F1] to-[#8B5CF6] flex items-center justify-center">
-                      <Plus className="w-3.5 h-3.5 text-white" />
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-white font-semibold flex items-center gap-2">
+                      <div className="w-6 h-6 rounded-lg bg-gradient-to-r from-[#6366F1] to-[#8B5CF6] flex items-center justify-center">
+                        <UserPlus className="w-3.5 h-3.5 text-white" />
+                      </div>
+                      Generate Test Access Code
+                    </h3>
+                    <span className="text-xs text-slate-500">One code per student</span>
+                  </div>
+                  
+                  <div className="mb-3">
+                    <label className="block text-slate-400 text-xs mb-1.5 font-medium">Student Name *</label>
+                    <input
+                      type="text"
+                      value={newStudentName}
+                      onChange={(e) => setNewStudentName(e.target.value)}
+                      placeholder="e.g., Rahul Verma"
+                      className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white placeholder-slate-600 text-sm focus:outline-none focus:border-[#6366F1] transition-all"
+                    />
+                  </div>
+                  
+                  <div className="grid grid-cols-2 gap-3 mb-3">
+                    <div>
+                      <label className="block text-slate-400 text-xs mb-1.5 font-medium">Email (optional)</label>
+                      <input
+                        type="email"
+                        value={newStudentEmail}
+                        onChange={(e) => setNewStudentEmail(e.target.value)}
+                        placeholder="student@email.com"
+                        className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white placeholder-slate-600 text-sm focus:outline-none focus:border-[#6366F1] transition-all"
+                      />
                     </div>
-                    Test Access Codes
-                  </h3>
-                  <label className="block text-slate-400 text-xs mb-1.5 font-medium">Student Name</label>
-                  <input
-                    type="text"
-                    value={newStudentName}
-                    onChange={(e) => setNewStudentName(e.target.value)}
-                    placeholder="e.g., Rahul Verma"
-                    className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white placeholder-slate-600 text-sm focus:outline-none focus:border-[#6366F1] transition-all mb-3"
-                  />
-                  <button
-                    onClick={generateCode}
-                    className="w-full py-2.5 rounded-xl border border-[#6366F1]/50 text-[#6366F1] text-sm font-medium hover:bg-[#6366F1]/10 transition-all mb-3"
-                  >
-                    Generate Unique Code
-                  </button>
+                    <div>
+                      <label className="block text-slate-400 text-xs mb-1.5 font-medium">Phone (optional)</label>
+                      <input
+                        type="text"
+                        value={newStudentPhone}
+                        onChange={(e) => setNewStudentPhone(e.target.value)}
+                        placeholder="+91 98765 43210"
+                        className="w-full px-3 py-2.5 rounded-xl bg-[#0F172A] border border-white/10 text-white placeholder-slate-600 text-sm focus:outline-none focus:border-[#6366F1] transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2 mb-3">
+                    <button
+                      onClick={generateCode}
+                      className="flex-1 py-2.5 rounded-xl border border-[#6366F1]/50 text-[#6366F1] text-sm font-medium hover:bg-[#6366F1]/10 transition-all"
+                    >
+                      <RefreshCw className="w-4 h-4 inline mr-1" /> Generate Code
+                    </button>
+                    <button
+                      onClick={() => {
+                        const existing = codes.find(c => c.student_name.toLowerCase() === newStudentName.trim().toLowerCase());
+                        if (existing) {
+                          setGeneratedCode(existing.code);
+                          toast.info(`Code found: ${existing.code}`);
+                        } else {
+                          toast.error('No existing code found for this student');
+                        }
+                      }}
+                      className="px-3 py-2.5 rounded-xl border border-white/10 text-slate-400 text-sm hover:bg-white/5 transition-all"
+                      title="Find existing code"
+                    >
+                      <Search className="w-4 h-4" />
+                    </button>
+                  </div>
+
                   {generatedCode && (
                     <div className="flex items-center gap-2 p-3 bg-gradient-to-r from-[#6366F1]/10 to-[#8B5CF6]/10 rounded-xl border border-[#6366F1]/20 mb-3">
+                      <Key className="w-4 h-4 text-[#6366F1]" />
                       <span className="font-mono text-emerald-400 text-sm flex-1 tracking-wider font-bold">{generatedCode}</span>
                       <button onClick={() => copyCode(generatedCode)} className="text-slate-400 hover:text-white transition-colors p-1">
                         {copiedCode === generatedCode ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
                       </button>
+                      <button
+                        onClick={() => setGeneratedCode('')}
+                        className="text-slate-500 hover:text-red-400 transition-colors"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
                     </div>
                   )}
-                  {generatedCode && (
-                    <button
-                      onClick={saveCode}
-                      className="w-full py-2.5 rounded-xl bg-gradient-to-r from-[#6366F1] to-[#8B5CF6] text-white text-sm font-semibold hover:shadow-lg hover:shadow-indigo-500/30 transition-all"
-                    >
-                      Save & Issue Code
-                    </button>
-                  )}
+
+                  <button
+                    onClick={saveCode}
+                    disabled={!generatedCode || !newStudentName.trim()}
+                    className="w-full py-2.5 rounded-xl bg-gradient-to-r from-[#6366F1] to-[#8B5CF6] text-white text-sm font-semibold hover:shadow-lg hover:shadow-indigo-500/30 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <Send className="w-4 h-4 inline mr-1" /> Assign Code to Student
+                  </button>
+
+                  <div className="mt-3 p-2.5 rounded-lg bg-blue-500/10 border border-blue-500/20">
+                    <p className="text-xs text-blue-400 flex items-start gap-1.5">
+                      <Shield className="w-3 h-3 mt-0.5 flex-shrink-0" />
+                      Each student gets one permanent code. If a new code is generated, the old one is deactivated.
+                    </p>
+                  </div>
                 </div>
               </div>
 
               <div className="lg:col-span-3">
                 <div className="bg-[#1E293B]/80 backdrop-blur-sm rounded-2xl border border-white/10 overflow-hidden">
-                  <div className="px-5 py-3.5 border-b border-white/10 bg-white/5">
-                    <span className="text-white font-semibold text-sm">📋 Issued Test Codes ({codes.length})</span>
+                  <div className="px-5 py-3.5 border-b border-white/10 bg-white/5 flex justify-between items-center">
+                    <span className="text-white font-semibold text-sm">📋 Registered Students & Codes ({codes.filter(c => c.is_active !== false).length} active)</span>
+                    <span className="text-slate-500 text-xs">{codes.length} total</span>
                   </div>
                   <div className="divide-y divide-white/5 max-h-96 overflow-y-auto">
-                    {codes.map((c) => (
-                      <div key={c.id} className="flex items-center gap-3 px-5 py-3 hover:bg-white/5 transition-colors">
-                        <div className="flex-1 min-w-0">
-                          <div className="text-white text-sm font-medium">{c.student_name}</div>
-                          <div className="text-slate-500 font-mono text-xs mt-0.5">{c.code}</div>
-                        </div>
-                        <span className={`px-2 py-0.5 rounded-full text-xs font-semibold flex-shrink-0 ${c.used ? 'bg-slate-700 text-slate-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
-                          {c.used ? 'Used' : 'Available'}
-                        </span>
-                        <button onClick={() => copyCode(c.code)} className="text-slate-500 hover:text-white transition-colors p-1">
-                          {copiedCode === c.code ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
-                        </button>
+                    {codes.length === 0 ? (
+                      <div className="px-5 py-8 text-center text-slate-500 text-sm">
+                        No students registered yet. Generate a code to get started.
                       </div>
-                    ))}
+                    ) : (
+                      codes.map((c) => {
+                        const isActive = c.is_active !== false;
+                        return (
+                          <div key={c.id} className={`flex items-center gap-3 px-5 py-3 hover:bg-white/5 transition-colors ${!isActive ? 'opacity-50' : ''}`}>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="text-white text-sm font-medium truncate">{c.student_name}</span>
+                                <span className={`px-1.5 py-0.5 rounded-full text-xs font-medium ${isActive ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'}`}>
+                                  {isActive ? 'Active' : 'Inactive'}
+                                </span>
+                              </div>
+                              <div className="font-mono text-teal-400 text-xs font-bold tracking-wider">{c.code}</div>
+                              {c.student_email && (
+                                <div className="text-slate-500 text-xs truncate">{c.student_email}</div>
+                              )}
+                              <div className="text-slate-600 text-xs mt-0.5">
+                                Created: {new Date(c.created_at).toLocaleDateString()}
+                                {c.used && <span className="ml-2 text-slate-500">• Used ✓</span>}
+                              </div>
+                            </div>
+                            <div className="flex gap-1.5">
+                              <button
+                                onClick={() => toggleCodeStatus(c.id, isActive)}
+                                className={`p-1.5 rounded-lg transition-colors ${isActive ? 'text-red-400 hover:bg-red-500/20' : 'text-emerald-400 hover:bg-emerald-500/20'}`}
+                                title={isActive ? 'Deactivate' : 'Activate'}
+                              >
+                                {isActive ? <StopCircle className="w-4 h-4" /> : <PlayCircle className="w-4 h-4" />}
+                              </button>
+                              <button
+                                onClick={() => copyCode(c.code)}
+                                className="p-1.5 rounded-lg text-slate-500 hover:text-teal-400 hover:bg-teal-500/10 transition-colors"
+                                title="Copy code"
+                              >
+                                <Copy className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={() => deleteCode(c.id, c.student_name)}
+                                className="p-1.5 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                                title="Delete code"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
                   </div>
                 </div>
               </div>
             </div>
 
-            {/* STUDY MATERIAL ACCESS CODES SECTION - WITH FULL LIST DISPLAY */}
+            {/* STUDY MATERIAL ACCESS CODES SECTION */}
             <div className="grid lg:grid-cols-5 gap-6">
               <div className="lg:col-span-2">
                 <div className="bg-[#1E293B]/80 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
@@ -1321,7 +1494,7 @@ export default function AdminDashboard({ onLoginSuccess, isLoggedIn }: AdminDash
               </div>
             </div>
             <div className="lg:col-span-3">
-              <div className="mb-4 flex gap-2">
+              <div className="mb-4 flex gap-2 flex-wrap">
                 <button
                   onClick={() => setSelectedCategory(null)}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${!selectedCategory ? 'bg-[#6366F1] text-white' : 'bg-[#1E293B] text-slate-400 hover:bg-white/5'}`}
